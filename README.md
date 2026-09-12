@@ -1,8 +1,18 @@
 # NETSLEUTH
 
-Social deduction on a live packet feed. One player is secretly the **Hacker**;
-everyone else is an **Analyst** watching a simplified Wireshark-style feed,
-trying to spot the anomalies the Hacker injects. Flag evidence, then vote.
+Social deduction where the network traffic *is* the players.
+
+Everyone gets an IP and a list of tasks. Doing a task — typing, clicking,
+winding — puts packets on the wire from your own address. One player is secretly
+the **Hacker**: they get an identical task list that completes on their screen
+but never moves the shared bar, so their only real move is to attack and stall.
+
+Analysts win by finishing every task, or by voting the Hacker out. The Hacker
+wins by running out the clock, or by whittling the analysts down to one.
+
+The catch is that the feed is a record of who has been busy. Head-down on your
+own tasks moves the bar but blinds you; watching the wire catches the Hacker but
+leaves *your* address quiet — which is exactly what a Hacker looks like.
 
 ## Architecture
 
@@ -15,39 +25,52 @@ Next.js (Vercel)                 PartyKit room (one room == one lobby)
 └─────────────────┘              └──────────────────────────────────┘
 ```
 
-Two rules carry the whole game, and both are enforced in `party/main.ts`:
+Three rules carry the whole game, all enforced in `party/main.ts`:
 
-1. **Roles never appear on a snapshot.** Snapshots are broadcast to everyone, so
-   a `role` field on one would hand the Hacker away in devtools. Roles are sent
-   per-connection instead.
-2. **The Hacker is never sent the feed.** The host's browser generates traffic,
-   but the *server* decides who receives it. There is no client-side branch to
-   flip, because the packets do not arrive at that connection at all.
+1. **Roles never appear on a snapshot.** Snapshots are broadcast, so a `role`
+   field on one would hand the Hacker away in devtools. Roles are per-connection.
+2. **The Hacker is never sent the feed.** There is no client-side branch to flip,
+   because the packets do not arrive at that connection at all.
+3. **Task credit is decided by the server.** A client reports that it *worked*,
+   never that it *finished*. The Hacker's work emits identical packets but is
+   silently discarded, which is what makes their task list a convincing fake.
 
-The Hacker's attacks are relayed back to the host's generator as an anonymous
-`inject` message — the host learns an attack happened, never who ordered it.
+Two packet sources share one subnet: the host's browser generates ambient noise
+from devices at `.100+`, and the server emits activity packets from validated
+work, sourced from the acting player's own address in `.20-.99`. The ranges are
+kept apart so an ambient device can never put traffic on the wire under a
+player's name.
+
+The Hacker's attacks reach the host's generator as an anonymous `inject` — the
+host learns an attack happened, never who ordered it.
 
 ## Round flow
 
 | Phase | What happens |
 | --- | --- |
 | `lobby` | Join by code. Host can kick, transfer host, and start at 3+ players. |
-| `playing` | Host generates traffic; analysts read and flag it; Hacker fires attacks. |
-| `meeting` | Flagged evidence is revealed, marked hit or clean. Everyone votes. |
-| `ended` | Hacker revealed, ejection resolved, per-analyst hit/miss scoreboard. |
+| `playing` | Everyone works tasks; analysts also read and flag the wire; Hacker attacks. |
+| `meeting` | Called by any player, once each. Evidence revealed, then a vote. |
+| `ended` | Hacker revealed, with the reason the round ended and a scoreboard. |
+
+An ejected player becomes a spectator and their unfinished work leaves the
+denominator, so a wrong vote costs time but never makes the bar unwinnable.
+Ejecting the Hacker ends it immediately.
 
 Attack signatures, all in `lib/packets.ts`:
 
-- **Spoofing** — gateway IP answers from a second MAC; gratuitous ARP; duplicate-address warning.
-- **Disruption** — SYN flood across climbing ports, retransmissions thickening as it runs.
-- **Takeover** — a live session jumps TCP sequence, switches port and protocol, and the victim's screen is seized for a few seconds.
+- **Spoofing** — gateway IP answers from a second MAC; gratuitous ARP; duplicate-address warning. Loud, but costs the analysts nothing.
+- **Disruption** — SYN flood across climbing ports, retransmissions thickening. **Freezes everyone's task work for 8 seconds** — the only attack that actually buys time.
+- **Takeover** — a live session jumps TCP sequence, switches port and protocol, and one analyst's screen is seized for 6 seconds.
 
 ## Layout
 
 | Path | What it is |
 | --- | --- |
 | `lib/protocol.ts` | **Wire protocol.** Shared by client and server; the one source of truth. |
-| `lib/packets.ts` | Traffic generator + the three attack signatures. Pure, no deps. |
+| `lib/packets.ts` | Ambient traffic, activity packets, the three attack signatures. Pure. |
+| `lib/tasks.ts` | Task lists and their work units. Pure. |
+| `components/Tasks.tsx` | The task panel — typing, clicking, winding. |
 | `lib/useRoom.ts` | One socket, mirrors server state, runs the host's generator loop. |
 | `party/main.ts` | Room server — roles, phases, feed filtering, flags, votes. |
 | `components/Lobby.tsx` | Lobby + phase routing. |
@@ -115,7 +138,8 @@ traffic arrives).
 - [x] **5.** Host generates feed -> server -> analysts only
 - [x] **6.** Hacker control panel
 - [x] **7.** Flagging, round timer, vote + tally + results
-- [ ] **8.** Multi-device playtest, tune anomaly frequency/subtlety
+- [x] **8.** Redesign: packets mirror player activity; tasks as the win condition
+- [ ] **9.** Multi-device playtest, tune task length and attack cadence
 
 ## Known rough edges
 
@@ -127,7 +151,11 @@ traffic arrives).
   who is also an analyst could read anomalies out of devtools. The server never
   sends ground truth to anyone, but the generator runs client-side by design.
 - Players can still join a room whose round has started; they arrive with no
-  role and see an analyst screen with an empty feed.
+  role or tasks and see an analyst screen.
+- **Three players is a knife-edge**: ejecting one analyst leaves 1v1, which is
+  parity and an instant Hacker win. Five or six plays far better.
+- Attack cooldowns are shown from the client's own last press, so a reconnect
+  shows "ready" early. The server still refuses — it just looks wrong for a moment.
 - A kick bars the player's tab id for the room's lifetime. Someone who clears
   sessionStorage gets a fresh id and can rejoin.
 - No rematch button yet — the `ended` phase is terminal until everyone leaves.

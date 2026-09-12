@@ -6,13 +6,16 @@ import { useRoom } from "@/lib/useRoom";
 import { didCreate, getStoredName, storeName } from "@/lib/session";
 import { MAX_NAME_LENGTH, MIN_PLAYERS, normalizeName, type Player } from "@/lib/protocol";
 import {
-  BenignMonitor,
-  HackerPanel,
+  AnalystScreen,
+  Countdown,
+  HackerScreen,
   Meeting,
+  ProgressBar,
   Results,
   TakeoverOverlay,
 } from "./Game";
 import { isValidRoomCode } from "@/lib/roomCode";
+import type { ClientMessage, RoomSnapshot } from "@/lib/protocol";
 
 export default function Lobby({ code }: { code: string }) {
   // Resolved after mount: sessionStorage does not exist during SSR.
@@ -63,6 +66,7 @@ function ConnectedLobby({
     youId,
     role,
     packets,
+    tasks,
     flags,
     takeoverUntil,
     error,
@@ -112,17 +116,35 @@ function ConnectedLobby({
   // knows. There is no client-side branch that could be flipped to see the
   // other side: the Hacker is never *sent* the feed at all.
   if (room && room.phase !== "lobby") {
+    const me = room.players.find((p) => p.id === youId);
+    const ejected = me?.ejected ?? false;
+
     return (
-      <GameShell code={code} phase={room.phase} onLeave={leave}>
+      <GameShell room={room} youId={youId} onLeave={leave} send={send}>
         {takeoverUntil !== null && takeoverUntil > Date.now() && (
           <TakeoverOverlay until={takeoverUntil} />
         )}
 
         {room.phase === "playing" &&
           (role === "hacker" ? (
-            <HackerPanel room={room} send={send} error={error} />
+            <HackerScreen
+              room={room}
+              youId={youId}
+              tasks={tasks}
+              ejected={ejected}
+              error={error}
+              send={send}
+            />
           ) : (
-            <BenignMonitor room={room} packets={packets} flags={flags} send={send} />
+            <AnalystScreen
+              room={room}
+              youId={youId}
+              packets={packets}
+              flags={flags}
+              tasks={tasks}
+              ejected={ejected}
+              send={send}
+            />
           ))}
 
         {room.phase === "meeting" && (
@@ -396,25 +418,57 @@ function NameGate({
 }
 
 function GameShell({
-  code,
-  phase,
+  room,
+  youId,
   onLeave,
+  send,
   children,
 }: {
-  code: string;
-  phase: string;
+  room: RoomSnapshot;
+  youId: string | null;
   onLeave: () => void;
+  send: (m: ClientMessage) => void;
   children: React.ReactNode;
 }) {
+  const me = room.players.find((p) => p.id === youId);
+  const playing = room.phase === "playing";
+
   return (
     <main className="shell wide">
       <div className="brand">
         <h1>Netsleuth</h1>
-        <span className="tag">// {phase === "playing" ? code : phase}</span>
+        <span className="tag">// {playing ? room.code : room.phase}</span>
         <button className="secondary leaveTop" onClick={onLeave}>
           Leave
         </button>
       </div>
+
+      {playing && (
+        <div className="gameBar">
+          <div className="barLeft">
+            <span className="barLabel">Tasks</span>
+            <ProgressBar done={room.progress.done} total={room.progress.total} />
+          </div>
+          <div className="barRight">
+            {me && !me.ejected && (
+              <button
+                className="secondary"
+                disabled={!me.canCallMeeting}
+                onClick={() => send({ type: "callMeeting" })}
+                title={
+                  me.canCallMeeting
+                    ? "Call everyone together. You only get one."
+                    : "You have used your meeting."
+                }
+              >
+                {me.canCallMeeting ? "Call meeting" : "Meeting used"}
+              </button>
+            )}
+            <Countdown deadline={room.deadline} />
+          </div>
+        </div>
+      )}
+
       {children}
     </main>
   );

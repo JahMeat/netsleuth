@@ -470,7 +470,7 @@ button.start {
 .feedHead,
 .prow {
   display: grid;
-  grid-template-columns: 56px 128px 128px 62px 62px 62px 74px 52px 1fr 62px;
+  grid-template-columns: 52px 96px 116px 116px 58px 70px 1fr 58px;
   gap: 8px;
   padding: 5px 14px;
   font-size: 12px;
@@ -765,4 +765,247 @@ button.attackCard:hover:not(:disabled) {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
+}
+
+/* --- two-column game layout --- */
+
+.gameGrid {
+  display: grid;
+  grid-template-columns: minmax(300px, 380px) 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .gameGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.gameLeft,
+.gameRight {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.barLeft {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 220px;
+}
+
+.barLabel {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* --- shared progress bar --- */
+
+.progressWrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+}
+
+.progressTrack {
+  flex: 1;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  min-width: 120px;
+}
+
+.progressFill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+  transition: width 0.3s ease;
+}
+
+.progressPct {
+  font-size: 12px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  min-width: 38px;
+  text-align: right;
+}
+
+/* --- tasks --- */
+
+.taskPanel {
+  margin-bottom: 0;
+}
+
+.taskList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.taskCard {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  border-radius: 6px;
+  padding: 13px 14px;
+}
+
+.taskCard.complete {
+  opacity: 0.5;
+  border-color: var(--accent-dim);
+}
+
+.taskHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.taskLabel {
+  font-size: 13px;
+}
+
+.taskProgress {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.taskBarTrack {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.taskBarFill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.taskVerb {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  margin: 12px 0 7px;
+}
+
+.typeTarget {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.typeTarget .typed {
+  color: var(--accent);
+}
+
+.taskInput {
+  font-size: 13px;
+  padding: 8px 10px;
+}
+
+.alertGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+button.alertChip {
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 184, 77, 0.4);
+  background: rgba(255, 184, 77, 0.1);
+  color: var(--warn);
+  letter-spacing: 0.04em;
+}
+
+button.alertChip:hover:not(:disabled) {
+  background: rgba(255, 184, 77, 0.2);
+}
+
+.windWrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+input.wind {
+  flex: 1;
+  accent-color: var(--accent);
+  padding: 0;
+  background: transparent;
+  border: none;
+}
+
+.windHint {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+.stallBanner {
+  border: 1px solid rgba(255, 92, 114, 0.45);
+  background: rgba(255, 92, 114, 0.1);
+  color: var(--danger);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  margin-bottom: 14px;
+}
+
+/* --- roster --- */
+
+.playerList.compact li {
+  padding: 8px 12px;
+}
+
+.playerList li.gone {
+  opacity: 0.45;
+}
+
+.gatewayRow {
+  opacity: 0.6;
+}
+
+.ipTag {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+  padding-left: 10px;
+}
+
+/* --- feed: the "who" column is the point now --- */
+
+.c-who {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+.prow .c-who.known {
+  color: var(--warn);
+}
+
+.attackEffect {
+  font-size: 11px;
+  color: var(--text);
+  opacity: 0.85;
 }

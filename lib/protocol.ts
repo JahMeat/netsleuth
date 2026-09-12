@@ -4,55 +4,82 @@
  * Everything that crosses the WebSocket is described here so the client and
  * server can never drift.
  *
- * The load-bearing rule: `RoomSnapshot` is broadcast to everyone, so nothing
- * secret may live on it. Roles and the packet feed are delivered per-connection
- * instead, gated by role on the server.
+ * Three rules carry the game, all enforced in `party/main.ts`:
+ *
+ *  1. `RoomSnapshot` is broadcast, so nothing secret may live on it. Roles and
+ *     task lists are delivered per-connection instead.
+ *  2. The Hacker is never *sent* the packet feed, so there is nothing to reveal
+ *     by tampering with their own client.
+ *  3. Task progress is credited by the server from validated actions. A client
+ *     cannot claim work it did not do, and the Hacker's work never counts.
  */
 
 import type { AttackKind, Packet } from "./packets";
+import type { Task, TaskKind } from "./tasks";
 
-export type { AttackKind, Packet };
+export type { AttackKind, Packet, Task, TaskKind };
 
 export type Phase = "lobby" | "playing" | "meeting" | "ended";
 
 export type Role = "benign" | "hacker";
 
 /**
- * A player as *everyone* sees them. There is deliberately no `role` here: this
- * object is broadcast, and a role on it would hand the Hacker away in devtools.
+ * A player as *everyone* sees them. No role here: this object is broadcast, and
+ * a role on it would hand the Hacker away in devtools.
+ *
+ * `ip` is public on purpose — correlating a quiet IP with a quiet player is the
+ * whole detection game.
  */
 export interface Player {
   id: string;
   name: string;
   isHost: boolean;
+  ip: string;
+  ejected: boolean;
+  /** Whether they still hold their one meeting call. */
+  canCallMeeting: boolean;
 }
 
-/** A packet someone marked as suspicious. */
+/** Shared task progress. Ejected players' unfinished work leaves the total. */
+export interface Progress {
+  done: number;
+  total: number;
+}
+
 export interface Evidence {
   seq: number;
   packet: Packet;
   byId: string;
   byName: string;
-  /** Whether it really was part of an attack. Only revealed in the meeting. */
   hit: boolean;
   kind: AttackKind | null;
 }
 
 export interface Vote {
   voterId: string;
-  /** null means an explicit skip. */
   targetId: string | null;
 }
+
+export type EndReason =
+  | "tasks_complete"
+  | "hacker_ejected"
+  | "time_expired"
+  | "analysts_outnumbered"
+  | "hacker_left";
 
 export interface RoundResult {
   hackerId: string;
   hackerName: string;
-  /** Who the room voted out, or null on a skip/tie. */
-  ejectedId: string | null;
-  ejectedName: string | null;
   benignWin: boolean;
-  /** Flags that landed on real attack traffic, per player. */
-  hits: { playerId: string; name: string; hits: number; misses: number }[];
+  reason: EndReason;
+  progress: Progress;
+  hits: {
+    playerId: string;
+    name: string;
+    hits: number;
+    misses: number;
+    tasksDone: number;
+  }[];
   attacksLaunched: number;
 }
 
@@ -61,9 +88,14 @@ export interface RoomSnapshot {
   code: string;
   phase: Phase;
   players: Player[];
-  /** Epoch ms when the current phase ends, or null if it has no clock. */
   deadline: number | null;
+  progress: Progress;
+  /** Gateway address, so clients render the LAN consistently. */
+  gatewayIp: string;
+  /** Set while an attack is stalling task work. */
+  stalledUntil: number | null;
   /** Meeting only. */
+  meetingCalledBy: string | null;
   evidence: Evidence[];
   votes: Vote[];
   /** Ended only. */
@@ -76,16 +108,18 @@ export type ClientMessage =
   | { type: "kick"; playerId: string }
   | { type: "transferHost"; playerId: string }
   | { type: "startGame" }
-  /** Host only: a tick of generated traffic. The server decides who sees it. */
+  /** Host only: ambient background traffic. Activity packets come from the server. */
   | { type: "feed"; packets: RawFeedPacket[] }
-  /** Hacker only: launch an attack. */
+  /** One unit of work on one of your own tasks. The server decides if it counts. */
+  | { type: "work"; taskId: string }
+  /** Hacker only. */
   | { type: "attack"; kind: AttackKind }
-  /** Benign only: mark a packet as suspicious. */
+  /** Analysts only: mark a packet as suspicious. */
   | { type: "flag"; seq: number }
-  /** Meeting only: vote to eject, or skip with null. */
+  /** Burn your one meeting call. */
+  | { type: "callMeeting" }
   | { type: "vote"; targetId: string | null };
 
-/** Packets as the host sends them up, ground truth attached. */
 export interface RawFeedPacket extends Packet {
   anomaly: AttackKind | null;
 }
@@ -101,69 +135,78 @@ export type ErrorCode =
   | "already_started"
   | "not_hacker"
   | "on_cooldown"
-  | "wrong_phase";
+  | "wrong_phase"
+  | "no_meeting_left"
+  | "stalled"
+  | "ejected";
 
 /** Server -> client. */
 export type ServerMessage =
   | { type: "snapshot"; room: RoomSnapshot; youId: string }
-  /**
-   * Your private role. Sent to one connection only, never on the snapshot.
-   * `hackerTargets` is the Hacker's view of who they are hiding among.
-   */
+  /** Your private role. Sent to one connection only, never on the snapshot. */
   | { type: "role"; role: Role }
-  /** Benign only: new traffic. The Hacker never receives this. */
-  | { type: "packets"; packets: Packet[] }
   /**
-   * Host only: the server is asking the host's generator to splice in an
-   * attack. It deliberately does not say who asked for it.
+   * Your own task list. The Hacker receives one that looks identical and
+   * advances normally on their screen — it simply never moves the shared bar.
    */
+  | { type: "tasks"; tasks: Task[] }
+  /** Analysts only: new traffic. The Hacker never receives this. */
+  | { type: "packets"; packets: Packet[] }
+  /** Host only: splice an attack into the ambient feed. Says nothing about who. */
   | { type: "inject"; kind: AttackKind; victimLabel?: string }
-  /** Sent to the victim of a takeover: show the attacker-controlled screen. */
   | { type: "takeover"; untilMs: number }
-  /** Feedback on your own flag, so flagging feels responsive. */
   | { type: "flagAck"; seq: number; hit: boolean }
   | { type: "kicked"; byName: string }
   | { type: "error"; code: ErrorCode; message: string };
 
 export const MAX_NAME_LENGTH = 16;
 
-/**
- * Social deduction needs a crowd to hide in. With two players the Hacker is
- * whoever is not you, so the game does not exist below three.
- */
+/** Social deduction needs a crowd to hide in. */
 export const MIN_PLAYERS = 3;
 
-/** Round length before the meeting is called, in ms. */
-export const ROUND_MS = 180_000;
-/** Discussion + voting window, in ms. */
+/** Tasks per player. */
+export const TASKS_PER_PLAYER = 4;
+
+/** Hard ceiling on the round. Expiry with work outstanding is a Hacker win. */
+export const ROUND_MS = 300_000;
+/** Discussion + voting window once someone calls a meeting. */
 export const MEETING_MS = 75_000;
-/** How long a takeover holds the victim's screen, in ms. */
 export const TAKEOVER_MS = 6_000;
-/** Per-attack cooldown so the Hacker cannot simply spam the feed, in ms. */
+/** How long a disruption freezes everyone's task work. */
+export const STALL_MS = 8_000;
 export const ATTACK_COOLDOWN_MS = 25_000;
-/** Shortest gap between any two attacks, in ms. */
 export const GLOBAL_ATTACK_COOLDOWN_MS = 10_000;
-/** How many packets a monitor keeps on screen. */
 export const FEED_WINDOW = 240;
 
-/** Trim/clamp a display name. Returns null if nothing usable is left. */
 export function normalizeName(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const name = raw.trim().replace(/\s+/g, " ").slice(0, MAX_NAME_LENGTH);
   return name.length > 0 ? name : null;
 }
 
-export const ATTACK_LABELS: Record<AttackKind, { name: string; blurb: string }> = {
+export const ATTACK_LABELS: Record<
+  AttackKind,
+  { name: string; blurb: string; effect: string }
+> = {
   spoof: {
     name: "Spoofing",
-    blurb: "Poison ARP so the gateway address answers from your MAC.",
+    blurb: "Poison ARP so the gateway answers from your MAC.",
+    effect: "Loud in the feed, but touches nobody's work.",
   },
   disrupt: {
     name: "Disruption",
-    blurb: "Flood a host with half-open connections until it buckles.",
+    blurb: "Flood a host with half-open connections.",
+    effect: "Freezes everyone's tasks for 8 seconds.",
   },
   takeover: {
     name: "Takeover",
-    blurb: "Hijack a live session and drive it for a few seconds.",
+    blurb: "Hijack a live session and drive it.",
+    effect: "Seizes one analyst's screen for 6 seconds.",
   },
+};
+
+export const TASK_VERBS: Record<TaskKind, string> = {
+  type: "Type it out",
+  click: "Clear each alert",
+  wind: "Wind it up",
 };

@@ -76,16 +76,31 @@ function int(rand: () => number, lo: number, hi: number): number {
   return lo + Math.floor(rand() * (hi - lo + 1));
 }
 
-/** Builds the little LAN the round takes place on. */
-export function createNetwork(rand: () => number = Math.random): Network {
-  const subnet = `192.168.${int(rand, 1, 20)}`;
+/**
+ * Builds the little LAN the round takes place on.
+ *
+ * Ambient devices live at .100 and above; players are assigned .20-.99 by the
+ * server. Keeping the ranges apart matters — an ambient host that happened to
+ * share a player's address would put traffic on the wire under that player's
+ * name, and the whole read-the-room mechanic would be quietly lying.
+ *
+ * Pass `gatewayIp` to pin the feed to a LAN the server already chose, so the
+ * host's ambient traffic and the players' activity share one subnet.
+ */
+export function createNetwork(
+  rand: () => number = Math.random,
+  gatewayIp?: string,
+): Network {
+  const subnet = gatewayIp
+    ? gatewayIp.split(".").slice(0, 3).join(".")
+    : `192.168.${int(rand, 1, 20)}`;
   const gateway: Host = {
     ip: `${subnet}.1`,
     mac: mac(rand),
     label: "gateway",
   };
   const hosts = HOST_LABELS.map((label, i) => ({
-    ip: `${subnet}.${20 + i * 3 + int(rand, 0, 2)}`,
+    ip: `${subnet}.${100 + i * 3 + int(rand, 0, 2)}`,
     mac: mac(rand),
     label,
   }));
@@ -382,6 +397,86 @@ export function createFeed(options?: {
       return out;
     },
   };
+}
+
+/**
+ * Packets produced by a player actually doing something.
+ *
+ * These are the signal the analysts read: every one carries the acting player's
+ * own IP as its source, so a busy player leaves a trail and an idle one leaves a
+ * hole. Emitted by the server from validated actions rather than by the host, so
+ * a client cannot manufacture a trail it did not earn.
+ */
+export function activityPackets(options: {
+  ip: string;
+  kind: "type" | "click" | "wind";
+  seqFrom: number;
+  gatewayIp: string;
+  rand?: () => number;
+}): RawPacket[] {
+  const rand = options.rand ?? Math.random;
+  const { ip, kind, gatewayIp } = options;
+  let seq = options.seqFrom;
+  const t = Date.now();
+
+  const mk = (p: Omit<RawPacket, "seq" | "t">): RawPacket => ({ ...p, seq: seq++, t });
+
+  if (kind === "type") {
+    return [
+      mk({
+        src: ip,
+        dst: gatewayIp,
+        srcPort: int(rand, 49152, 65535),
+        dstPort: 443,
+        proto: "HTTP",
+        flags: "PSH,ACK",
+        len: int(rand, 180, 420),
+        info: `POST /api/notes keystroke batch (${int(rand, 3, 14)} chars)`,
+        anomaly: null,
+      }),
+    ];
+  }
+
+  if (kind === "click") {
+    return [
+      mk({
+        src: ip,
+        dst: gatewayIp,
+        srcPort: int(rand, 49152, 65535),
+        dstPort: 443,
+        proto: "HTTP",
+        flags: "PSH,ACK",
+        len: int(rand, 120, 260),
+        info: `POST /api/actions/ack id=${int(rand, 1000, 9999)}`,
+        anomaly: null,
+      }),
+    ];
+  }
+
+  return [
+    mk({
+      src: ip,
+      dst: gatewayIp,
+      srcPort: int(rand, 49152, 65535),
+      dstPort: 443,
+      proto: "WS",
+      flags: "PSH,ACK",
+      len: int(rand, 60, 140),
+      info: `WebSocket frame: relay.step seq=${int(rand, 1, 999)}`,
+      anomaly: null,
+    }),
+    mk({
+      src: options.gatewayIp,
+      dst: ip,
+      srcPort: 443,
+      dstPort: int(rand, 49152, 65535),
+      proto: "WS",
+      flags: "ACK",
+      len: 66,
+      info: "WebSocket frame: relay.ack",
+      anomaly: null,
+    }),
+  ];
 }
 
 /** Strip ground truth. Anything sent to a player must go through this. */

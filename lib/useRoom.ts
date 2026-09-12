@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import usePartySocket from "partysocket/react";
 import { PARTYKIT_HOST } from "./partyHost";
 import { getTabId } from "./session";
-import { createFeed, type Feed } from "./packets";
+import { createFeed, createNetwork, type Feed } from "./packets";
 import {
   FEED_WINDOW,
   type ClientMessage,
@@ -13,6 +13,7 @@ import {
   type Role,
   type RoomSnapshot,
   type ServerMessage,
+  type Task,
 } from "./protocol";
 
 export type ConnectionStatus = "idle" | "connecting" | "connected" | "closed";
@@ -26,8 +27,10 @@ export interface UseRoomResult {
   youId: string | null;
   /** Your private role, or null while in the lobby. */
   role: Role | null;
-  /** Benign only: the rolling packet window. */
+  /** Analysts only: the rolling packet window. */
   packets: Packet[];
+  /** Your own task list. Everyone gets one, including the Hacker. */
+  tasks: Task[];
   /** Sequence numbers you flagged, mapped to whether they were real. */
   flags: Map<number, boolean>;
   /** Epoch ms until which your screen is seized, or null. */
@@ -53,6 +56,7 @@ export function useRoom(options: {
   const [youId, setYouId] = useState<string | null>(null);
   const [role, setRole] = useState<Role | null>(null);
   const [packets, setPackets] = useState<Packet[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [flags, setFlags] = useState<Map<number, boolean>>(new Map());
   const [takeoverUntil, setTakeoverUntil] = useState<number | null>(null);
   const [error, setError] = useState<UseRoomResult["error"]>(null);
@@ -102,6 +106,9 @@ export function useRoom(options: {
         case "role":
           setRole(msg.role);
           break;
+        case "tasks":
+          setTasks(msg.tasks);
+          break;
         case "packets":
           // Bounded window: a long round would otherwise grow this forever and
           // drag the render down with it.
@@ -149,10 +156,16 @@ export function useRoom(options: {
    * Host-authoritative generation: only the host's browser produces traffic, and
    * it ships every tick to the server, which decides who is allowed to see it.
    */
-  useEffect(() => {
-    if (!youAreHost || !playing) return;
+  const gatewayIp = room?.gatewayIp;
 
-    if (!feedRef.current) feedRef.current = createFeed();
+  useEffect(() => {
+    if (!youAreHost || !playing || !gatewayIp) return;
+
+    // Pin the ambient traffic to the LAN the server already handed out player
+    // addresses on, or the feed would show two unrelated subnets.
+    if (!feedRef.current) {
+      feedRef.current = createFeed({ network: createNetwork(Math.random, gatewayIp) });
+    }
     const feed = feedRef.current;
 
     const id = setInterval(() => {
@@ -161,7 +174,7 @@ export function useRoom(options: {
     }, TICK_MS);
 
     return () => clearInterval(id);
-  }, [youAreHost, playing, send]);
+  }, [youAreHost, playing, gatewayIp, send]);
 
   // A new round deserves a fresh network and fresh sequence numbers.
   useEffect(() => {
@@ -170,6 +183,7 @@ export function useRoom(options: {
       setPackets([]);
       setFlags(new Map());
       setRole(null);
+      setTasks([]);
     }
   }, [room?.phase]);
 
@@ -186,6 +200,7 @@ export function useRoom(options: {
     youId,
     role,
     packets,
+    tasks,
     flags,
     takeoverUntil,
     error,
