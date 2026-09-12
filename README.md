@@ -1,36 +1,72 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# NETSLEUTH
 
-## Getting Started
+Social deduction on a live packet feed. One player is secretly the **Hacker**;
+everyone else is **Benign** and watches a simplified Wireshark-style feed, trying
+to spot the anomalies the Hacker injects. Flag evidence, then vote.
 
-First, run the development server:
+## Architecture
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+Next.js (Vercel)                 PartyKit room (one room == one lobby)
+┌─────────────────┐              ┌──────────────────────────────────┐
+│ host browser    │ ──packets──▶ │  authoritative room state        │
+│ benign browsers │ ◀─filtered── │  players / roles / packets/votes │
+│ hacker browser  │ ──attacks──▶ │  (in-memory, no database)        │
+└─────────────────┘              └──────────────────────────────────┘
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The host's browser generates the packet feed, but the **server** decides who
+receives it. Role-based filtering is server-side in `party/main.ts`, never
+merely hidden in the UI — the Hacker's client must not be able to read the feed
+off the wire.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Layout
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Path | What it is |
+| --- | --- |
+| `app/page.tsx` | Landing: pick a name, create or join a lobby |
+| `app/room/[code]/page.tsx` | Room route; normalizes the code |
+| `components/Lobby.tsx` | Lobby UI, name gate for direct links |
+| `lib/protocol.ts` | **Wire protocol.** Shared by client and server |
+| `lib/useRoom.ts` | React hook: one socket, mirrors server state |
+| `lib/roomCode.ts` | 6-char codes, unambiguous alphabet |
+| `lib/session.ts` | Per-tab identity (sessionStorage) |
+| `party/main.ts` | PartyKit room server — the authority |
 
-## Learn More
+## Running locally
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm install
+npm run dev          # Next on :3000 and PartyKit on :1999 together
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Or in separate terminals: `npm run dev:next` / `npm run dev:party`.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Open <http://localhost:3000>, create a lobby, then open the room URL in a second
+tab. Identity is per-tab, so two tabs are two players.
 
-## Deploy on Vercel
+## Deploying
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+npm run deploy:party   # -> netsleuth.<your-partykit-username>.partykit.dev
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Then set `NEXT_PUBLIC_PARTYKIT_HOST` to that host in the Vercel project's
+environment variables and deploy the Next app. See `.env.example`.
+
+## Build milestones
+
+- [x] **1.** Scaffold, room-join flow end to end
+- [ ] **2.** Lobby polish: ready-up, start-game gate
+- [ ] **3.** Role assignment, route to Benign monitor vs Hacker panel
+- [ ] **4.** Packet generator (pure function, 3 attack signatures)
+- [ ] **5.** Host generates feed -> server -> Benign players only
+- [ ] **6.** Hacker control panel (spoof / disrupt / takeover)
+- [ ] **7.** Flag packets, round timer, vote + tally
+- [ ] **8.** Multi-device playtest, tune subtlety
+
+## Known rough edges
+
+- Room state is in-memory. If every player disconnects, the lobby's player list
+  is gone (the "this code exists" marker is persisted, so the code still works).
+- No max player count or reconnect grace period yet.

@@ -3,12 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "concurrently -n next,party -c cyan,magenta \"next dev\" \"partykit dev\"",
+    "dev:next": "next dev",
+    "dev:party": "partykit dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "deploy:party": "partykit deploy"
   },
   "dependencies": {
     "next": "16.3.5",
+    "partysocket": "^1.3.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
@@ -16,6 +21,8 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "concurrently": "^10.0.5",
+    "partykit": "^0.0.115",
     "typescript": "^5"
   }
 }
