@@ -5,5 +5,7 @@
   "serve": {
     "path": "out",
     "singlePageApp": true
-  }
+  },
+  "domain": "party.netsleuth.me",
+  "compatibilityDate": "2024-09-12"
 }
