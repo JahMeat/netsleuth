@@ -179,8 +179,9 @@ function ConnectedLobby({
         <p className="codeDisplay">{code}</p>
         {!fatal && (
           <p className="hint">
-            Share this code, or send the link to this page. Open it in a second tab to
-            test with two players.
+            Send anyone the link in your address bar &mdash; it already carries the
+            code. Opening it in another tab is a second player, so you can test
+            alone.
           </p>
         )}
       </div>
@@ -231,9 +232,9 @@ function ConnectedLobby({
               <p className="hint">
                 {room.players.length > 1 ? (
                   <>
-                    You are the host: your browser will generate the packet feed. The{" "}
+                    You are the host: you start the round. The{" "}
                     <strong>&middot;&middot;&middot;</strong> menu on a player lets you
-                    hand off that job or remove them.
+                    hand the role over or remove them.
                   </>
                 ) : (
                   <>

@@ -1,5 +1,11 @@
 {
   "$schema": "https://www.partykit.io/schema.json",
   "name": "netsleuth",
-  "main": "party/main.ts"
+  "main": "party/main.ts",
+  "serve": {
+    "path": "out",
+    "singlePageApp": true
+  },
+  "domain": "party.netsleuth.me",
+  "compatibilityDate": "2024-09-12"
 }

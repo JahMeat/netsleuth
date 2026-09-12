@@ -7,13 +7,13 @@
     "dev:next": "next dev",
     "dev:party": "partykit dev",
     "build": "next build",
-    "start": "next start",
     "typecheck": "tsc --noEmit",
-    "deploy:party": "partykit deploy",
     "test:feed": "tsx scripts/feed-demo.mts",
     "test:game": "tsx scripts/game-test.mts",
     "dev:party:fast": "partykit dev --var ROUND_MS=120000 --var MEETING_MS=45000 --var SCAN_MS=3000",
-    "test:restart": "tsx scripts/restart-test.mts"
+    "test:restart": "tsx scripts/restart-test.mts",
+    "deploy": "next build && partykit deploy",
+    "preview": "next build && partykit dev"
   },
   "dependencies": {
     "next": "16.3.5",
