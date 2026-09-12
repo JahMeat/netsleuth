@@ -1,210 +1,265 @@
 # NETSLEUTH
 
-Social deduction where the network traffic *is* the players.
+**One of you is a hacker. The network will tell you who — if you can read it.**
 
-Everyone gets an address and a list of tasks. Doing a task — typing, clicking,
-winding — puts packets on the wire from your own address. Nothing else does:
-there is no ambient traffic and no outside hosts, so the feed is a complete
-record of who has been busy.
+A social deduction game where everything you do shows up as network traffic, and
+everything the hacker does shows up too.
 
-**You learn your own address and nobody else's.** That one rule drives both
-sides. The Hacker has to sweep for a victim before they can compromise them, and
-the analysts have to argue their way from "something hostile came from .38" to
-"who here is .38?".
+*New here? The next 60 seconds is all you need to start.*
 
-Every hostile act — sweeping, compromising, attacking — emits from the Hacker's
-own address. So the analysts are hunting one misbehaving address, and the
-Hacker's counter-play is to do fake work from that same address and lie about
-which one is theirs.
+---
 
-Analysts win by finishing every task or voting the Hacker out. The Hacker wins by
-running out the clock, or by compromising analysts until only one is left.
+## The 60-second version
 
-## Architecture
+- Everyone gets a **secret address** like `192.168.4.37`. You know yours. **You do not know anyone else's.**
+- Everyone gets **4 tasks**. Doing them fills a **shared progress bar**.
+- **Doing a task puts packets on the wire from your address.** Sitting still puts nothing.
+- One player is the **hacker**. Their tasks look real to them but never fill the bar.
+- **Analysts win** by finishing every task, or by voting the hacker out.
+- **The hacker wins** by running out the clock, or by picking analysts off until one is left.
+- Anyone can call **one meeting**. You argue, you vote, someone gets thrown out.
 
-One PartyKit deployment serves everything: the static Next.js export *and* the
-room server, on a single origin.
+The whole game is the gap between *"something nasty came from `.37`"* and
+*"okay, so who is `.37`?"*
 
-```
-                    PartyKit (one deploy, one origin)
-┌─────────────────┐ ┌──────────────────────────────────────────────┐
-│ analyst browsers│ │  static Next export  (serve: out/)           │
-│ hacker browser  │◀│  room server         (party/main.ts)         │
-└─────────────────┘ │  state: players / roles / addresses / tasks  │
-                    │  in-memory, no database                      │
-                    └──────────────────────────────────────────────┘
-```
+---
 
-Because the page and the socket share an origin, the client reads the socket
-host straight off the page URL. **There is no environment variable to set.**
+## Before you start
 
-Four rules carry the whole game, all enforced in `party/main.ts`:
+**You need at least 3 players — but play with 5 or 6.** At 3, losing one analyst
+ends the round instantly, so nobody gets to play.
 
-1. **Roles never appear on a snapshot.** Snapshots are broadcast, so a `role`
-   field on one would hand the Hacker away in devtools. Roles are per-connection.
-2. **Addresses never appear on a snapshot either.** You are told yours over a
-   private message; the mapping exists only on the server.
-3. **The Hacker is never sent the feed.** There is no client-side branch to flip,
-   because the packets do not arrive at that connection at all.
-4. **Task credit is decided by the server.** A client reports that it *worked*,
-   never that it *finished*. The Hacker's work emits identical packets but is
-   silently discarded, which is what makes their task list a convincing fake.
+**You need to be able to talk to each other.** There is no chat in the game.
+Same room, or a voice call. The app handles the wire and the vote; the accusing
+is on you.
 
-Every packet is generated server-side from a validated action, so a client cannot
-manufacture a trail it did not earn. There is no host-generated traffic any more:
-once the feed became a record of people, ambient noise had nobody to belong to.
+**Joining:** one person clicks **Create lobby** and reads out the 6-character
+code, or just sends the link — it already has the code in it. Everyone else
+opens it and picks a name.
 
-## Round flow
+The host starts the round when everyone's in.
 
-| Phase | What happens |
+---
+
+## Your screen
+
+Once the round starts you get **tasks on the left, the wire on the right**.
+
+| Where | What it is |
 | --- | --- |
-| `lobby` | Join by code. Host can kick, transfer host, and start at 3+ players. |
-| `playing` | Everyone works tasks; analysts read and flag the wire; Hacker sweeps, compromises and attacks. |
-| `meeting` | Called by any player, once each. Evidence revealed, then a vote. |
-| `ended` | Hacker revealed, with the reason the round ended and a scoreboard. |
+| Top bar | Shared progress, the round clock, and **Call meeting** |
+| Left | Your 4 tasks, and who's in the room |
+| Right | The live packet feed, with a **flag** button on every line |
 
-A player who is out — voted or compromised — becomes a spectator, and their
-unfinished work leaves the denominator, so losing someone costs time but never
-makes the bar unwinnable. Ejecting the Hacker ends it immediately.
+Your own address is shown next to your name, and only to you. Your own packets
+are marked `you` in the feed so you can tell your trail from everyone else's.
 
-### The Hacker's loop
+A round is **5 minutes**.
 
-1. **Sweep** for a named player. Takes several seconds and is unmistakable on the
-   wire — the room sees a scan happen, they just cannot tell whose address did
-   it. It probes several live hosts, not only the real target, so the scan does
-   not hand over the victim's identity along with itself.
-2. **Compromise** an address you have already found. The server refuses any
-   address you have not swept for. A compromised account is out for good.
-3. **Attack** to buy time, or to look busy.
+---
 
-Hostile signatures, all in `lib/packets.ts`:
+## If you're an Analyst
 
-- **Sweep** — broadcast ARP sweep plus SYN probes at several live hosts.
-- **Compromise** — a replayed session key on port 22, then "account locked out".
-- **Spoofing** — gateway address answers from a second MAC. Loud, costs nothing.
-- **Disruption** — SYN flood at the gateway. **Freezes everyone's task work for 8 seconds** — the only attack that buys real time.
-- **Takeover** — a session jumps TCP sequence and drops TLS for TELNET; one analyst's screen is seized for 6 seconds.
+You have two jobs and **you cannot do both at once**. That is the game.
 
-## Layout
+**Job one: do your tasks.** Four of them — type a phrase, clear six alerts, wind
+a handle ten times. They're easy. They just need attention.
 
-| Path | What it is |
+**Job two: watch the wire.** Every packet has a source address. Hostile traffic
+looks nothing like ordinary work once you've seen it (see below). Hit **flag**
+on anything suspicious — you'll be told instantly whether you were right, and
+flagged packets become public evidence in the meeting.
+
+### The squeeze
+
+Heads-down on your tasks moves the bar but **you see nothing**.
+
+Watching the wire catches the hacker but **your address goes quiet** — and a
+quiet address is exactly what everyone will be hunting for.
+
+Talk to each other. Somebody should be watching. Say so out loud.
+
+---
+
+## If you're the Hacker
+
+You get the same task list as everyone else. **Do them.** They complete on your
+screen and they put exactly the same packets on the wire as real work — they
+just never move the shared bar. With no background traffic to hide in, faking
+work is the only thing keeping you from being the obvious silent address.
+
+You have three tools, in the order you'll use them:
+
+**1. Sweep** — pick a player and hunt for their address. Takes **6 seconds** to
+come back, then a **20-second** cooldown. This is loud: everyone sees a sweep
+happen. They can't tell it was you — but they'll know someone's hunting.
+
+**2. Compromise** — kill an address you've already swept for. The game refuses
+any address you haven't found. **35 seconds** between kills. A compromised
+player is out for good.
+
+**3. Attacks** — noise and delay. 25 seconds each, 10 seconds between any two.
+
+| Attack | What it does |
 | --- | --- |
-| `lib/protocol.ts` | **Wire protocol.** Shared by client and server; the one source of truth. |
-| `lib/packets.ts` | Every packet shape: work, sweep, compromise, the three attacks. Pure. |
-| `lib/tasks.ts` | Task lists and their work units. Pure. |
-| `lib/useRoom.ts` | One socket, mirrors server state, holds your private role/address/tasks. |
-| `party/main.ts` | Room server — roles, addresses, phases, feed filtering, flags, votes. |
-| `components/Tasks.tsx` | The task panel — typing, clicking, winding. |
-| `components/Game.tsx` | Analyst monitor, hacker panel, takeover overlay, meeting, results. |
-| `components/Lobby.tsx` | Lobby + phase routing. |
+| **Disruption** | Freezes *everyone's* task work for 8 seconds. The only one that actually buys you time. |
+| **Spoofing** | Very loud, costs the analysts nothing. Pure misdirection. |
+| **Takeover** | Blacks out one analyst's screen for 6 seconds. |
 
-## Running locally
+### The thing to understand
 
-```bash
-npm install
-npm run dev
+**Every hostile act comes from your address.** Sweeps, kills, attacks — all of
+it, same source. The moment someone connects two hostile lines to the same
+address, they have your address. They still have to work out that it's *you* —
+so be ready to have an answer about which address is yours.
+
+---
+
+## Reading the wire
+
+This is the actual skill. Ordinary work looks like this:
+
+```
+192.168.4.37 → 192.168.4.1   HTTP   POST /api/notes keystroke batch (7 chars)
+192.168.4.37 → 192.168.4.1   HTTP   POST /api/actions/ack id=4821
+192.168.4.37 → 192.168.4.1   WS     WebSocket frame: relay.step seq=204
 ```
 
-Next on :3000 (with hot reload), PartyKit on :1999. Open
-<http://localhost:3000>; a page on localhost knows to dial :1999 for the socket,
-so this needs no configuration either.
+Somebody typing, clicking, winding. Boring. That's the point — **that's what a
+busy, innocent player looks like.**
 
-To check the real deployed shape — one origin, static assets served by PartyKit:
+Here's what isn't boring:
 
-```bash
-npm run preview
+### Somebody is hunting
+
+```
+192.168.4.37 → 255.255.255.255   ARP   Who has 192.168.4.0/24? (address sweep)
+192.168.4.37 → 192.168.4.61      TCP   Probe 192.168.4.61 — host discovery
 ```
 
-Then open <http://127.0.0.1:1999>. Create a lobby and open the URL in more tabs;
-identity is per-tab, so four tabs are four players.
+A sweep. Someone is looking for people's addresses, and **`.37` is the hacker**.
+Say the address out loud immediately.
 
-### One page, one route
+### Somebody just died
 
-The whole app is `/`, and a room is `/?code=ABC123`. A dynamic path segment
-cannot be statically exported — room codes are random, so there is no list to
-prerender — and a static host maps extensionless paths inconsistently: `/room/`
-serves while `/room` 404s. Collapsing to one route means no pasted link can land
-on a page that does not exist.
-
-## Checking it without a browser
-
-```bash
-npm run test:feed      # print every packet shape, with hostile ones marked
-npm run test:game      # drive a full round over raw WebSocket
-npm run test:restart   # two rounds back to back, checking nothing carries over
+```
+192.168.4.37 → 192.168.4.61   SSH   Auth attempt on 192.168.4.61 — replayed session key
+192.168.4.61 → 192.168.4.37   SSH   Auth accepted — new shell opened
+192.168.4.37 → 192.168.4.61   SSH   Account on 192.168.4.61 locked out
 ```
 
-Both socket tests need a room server running (`npm run dev:party`) and neither
-depends on how it was launched.
+A compromise. `.61` is gone, and `.37` did it.
 
-`test:game` is the one that matters: it talks straight to the room server, so it
-cannot be fooled by UI that merely hides things. It asserts that no address ever
-appears in a broadcast snapshot, that the Hacker receives zero packet messages,
-that every source on the wire belongs to a player or the gateway, and that a
-compromise is refused against an address the Hacker has not swept for.
+### The gateway is lying
 
-## Deploying
-
-```bash
-npx partykit login   # once
-npm run deploy       # builds the static export, then ships both
+```
+192.168.4.37 → 255.255.255.255   ARP   192.168.4.1 is at a4:1c:… (duplicate use of 192.168.4.1 detected)
+192.168.4.37 → 192.168.4.1       ARP   Gratuitous ARP — default gateway MAC changed mid-session
 ```
 
-That is the whole deploy. It prints the URL —
-`netsleuth.<your-partykit-username>.partykit.dev` — and that single link is the
-game. No second host, no environment variables, nothing to keep in sync.
+Spoofing. One address can't belong to two machines — that's the "duplicate use"
+warning telling you someone is impersonating the gateway.
 
-Hosting the frontend elsewhere (Vercel, Netlify) still works: set
-`NEXT_PUBLIC_PARTYKIT_HOST` to the deployed room host and it overrides the
-same-origin default. See `.env.example`. Note that `NEXT_PUBLIC_*` is inlined at
-build time, so changing it needs a rebuild, not just a settings edit.
+### The flood
 
-## Tuning
-
-Round, meeting and sweep timings are PartyKit vars, so they can change without a
-code edit — useful during playtesting:
-
-```bash
-npx partykit dev --var ROUND_MS=90000 --var MEETING_MS=45000 --var SCAN_MS=3000
+```
+192.168.4.37 → 192.168.4.1   TCP   Seq=0 Win=1024 Len=0 MSS=1460
+192.168.4.37 → 192.168.4.1   TCP   [TCP Retransmission] Seq=0 Win=1024 Len=0
+        ... ten of them, climbing ports, retransmissions piling up ...
 ```
 
-Everything else lives as constants in `lib/protocol.ts`: attack and compromise
-cooldowns, takeover duration, stall length, tasks per player, feed window.
+Disruption — and if your tasks just froze, this is why.
 
-## Build milestones
+### The hijack
 
-- [x] **1.** Scaffold, room-join flow end to end
-- [x] **2.** Lobby: kick, transfer host, leave
-- [x] **2b.** Start-game gate (host only, minimum 3 players)
-- [x] **3.** Role assignment, routing to Analyst vs Hacker screens
-- [x] **4.** Packet generator with attack signatures
-- [x] **5.** Server-side feed, delivered to analysts only
-- [x] **6.** Hacker control panel
-- [x] **7.** Flagging, round timer, vote + tally + results
-- [x] **8.** Redesign: packets mirror player activity; tasks as the win condition
-- [x] **9.** Players-only wire; private addresses; sweep and compromise
-- [x] **10.** Host restart; single-origin hosting on PartyKit
-- [ ] **11.** Multi-device playtest; tune task length, sweep cost, kill cooldown
+```
+192.168.4.37 → 192.168.4.61   TCP      Seq=2638495 (previous Seq=376449) — sequence jump
+192.168.4.61 → 192.168.4.37   TELNET   Session switched TLS -> TELNET on established stream
+```
 
-## Known rough edges
+A takeover. A conversation that suddenly stops behaving like itself.
 
-- Room state is in-memory. If every player disconnects, the lobby is gone (the
-  "this code exists" marker is persisted, so the code still works).
-- The host role now only gates starting the round and the lobby controls; it no
-  longer generates anything.
-- With no ambient traffic the wire is sparse, so an idle address is glaring. That
-  is intended, but it means fake tasks are the Hacker's only cover — if they are
-  hunting instead of working, they stand out fast.
-- Players can still join a room whose round has started; they arrive with no role
-  or tasks and see an analyst screen.
-- **Three players is a knife-edge**: losing one analyst leaves 1v1, which is
-  parity and an instant Hacker win. Five or six plays far better.
-- Cooldown labels on the Hacker panel are driven by that client's own last press,
-  so a reconnect shows "ready" early. The server still refuses — it just looks
-  wrong for a moment.
-- A kick bars the player's tab id for the room's lifetime. Someone who clears
-  sessionStorage gets a fresh id and can rejoin.
-- On Windows, `partykit dev` can leave an orphaned `workerd` child holding port
-  1999, so killing by port starts a second server that silently fails to bind and
-  leaves the stale one serving. Kill by command line instead:
-  `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "partykit|workerd" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`
+> **The one rule that matters:** you're not looking for *packets*, you're looking
+> for an **address**. Every hostile line above has the same source. Find the
+> address that misbehaves and you've found the hacker's machine.
+
+---
+
+## Meetings and voting
+
+Anyone can call **one meeting per round**. Use it when you have something —
+calling it with nothing wastes the only one you get.
+
+Everything anyone flagged becomes public, labelled with **who flagged it** and
+whether it was genuinely hostile or just ordinary traffic. Someone who flagged
+five things and hit nothing looks careless. Or looks like they're making noise.
+
+Your own address is shown on the meeting screen. **Nobody else can see it.**
+Claiming it is a move — and so is staying quiet. So is lying.
+
+You get **75 seconds** and one vote each. **A tie throws nobody out.** You can
+skip.
+
+Voting out an analyst doesn't end the round — they become a spectator, and their
+unfinished tasks come off the bar, so a wrong vote costs you time but never
+makes the game unwinnable.
+
+---
+
+## How a round ends
+
+**Analysts win when:**
+- every task is finished, or
+- the hacker gets voted out
+
+**The hacker wins when:**
+- the 5 minutes run out with work unfinished, or
+- only one analyst is left standing
+
+Then you see who it was, why it ended, and a scoreboard: tasks done, correct
+flags, wrong flags. The host can hit **Play again** — everyone gets new roles,
+and **new addresses**, so nothing you learned carries over.
+
+---
+
+## First game? Read this bit.
+
+**As an analyst:**
+- **Do your tasks.** Genuinely. A round lost to nobody working is a boring round.
+- Say your address out loud early. It costs you almost nothing and makes everyone
+  else's deductions possible.
+- When you flag a hit, **say the source address**, not "I found something".
+- Don't burn your meeting on a hunch.
+
+**As the hacker:**
+- **Work first.** Do a couple of real-looking tasks before you touch anything else.
+  Silence is what gets you caught, not attacks.
+- Sweep when people are heads-down, not right after a meeting.
+- Disruption is your only real weapon against the bar. Spoofing is a decoy —
+  fire it somewhere far from where you're about to kill.
+- Have your lie ready before someone asks whose address is whose.
+
+**Everyone:** the game is played out loud. The screen just gives you something
+true to argue about.
+
+---
+
+## Common confusions
+
+**"I can't see anyone's address."** Correct. You only ever see your own. Working
+out the rest is the game.
+
+**"My screen went black."** A takeover. Six seconds. Say so — it's evidence that
+an attack just happened.
+
+**"My tasks stopped working."** A disruption flood. Eight seconds, hits everyone.
+
+**"I flagged something and it said miss."** Ordinary traffic. Harmless, but the
+room sees your misses in the meeting.
+
+**"I'm out — can I still do anything?"** You can watch the wire. You can't work,
+flag, or vote. No talking, either, if you want the round to stay fair.
+
+---
+
+<sub>Running or deploying it? See [DEVELOPING.md](DEVELOPING.md).</sub>
