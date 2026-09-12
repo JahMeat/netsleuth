@@ -367,3 +367,20 @@ button.dots[aria-expanded="true"] {
   font-size: 12px;
   padding: 8px 14px;
 }
+
+/* --- start gate --- */
+
+.startPanel {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+button.start {
+  font-size: 14px;
+  padding: 12px 24px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 600;
+}

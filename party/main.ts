@@ -1,5 +1,6 @@
 import type * as Party from "partykit/server";
 import {
+  MIN_PLAYERS,
   normalizeName,
   type ClientMessage,
   type ErrorCode,
@@ -55,6 +56,8 @@ export default class NetsleuthRoom implements Party.Server {
         return this.onKick(msg, sender);
       case "transferHost":
         return this.onTransferHost(msg, sender);
+      case "startGame":
+        return this.onStartGame(sender);
       default:
         return this.sendError(sender, "bad_message", "Unknown message type.");
     }
@@ -155,6 +158,27 @@ export default class NetsleuthRoom implements Party.Server {
     host.isHost = false;
     target.isHost = true;
 
+    this.broadcastSnapshot();
+  }
+
+  private onStartGame(sender: Party.Connection) {
+    if (!this.requireHost(sender)) return;
+
+    if (this.phase !== "lobby") {
+      return this.sendError(sender, "already_started", "The round has already begun.");
+    }
+
+    // Re-checked here and not only in the UI: the button being disabled on the
+    // host's screen is a courtesy, not a guarantee.
+    if (this.players.size < MIN_PLAYERS) {
+      return this.sendError(
+        sender,
+        "not_enough_players",
+        `Need at least ${MIN_PLAYERS} players to start.`,
+      );
+    }
+
+    this.phase = "playing";
     this.broadcastSnapshot();
   }
 

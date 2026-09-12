@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRoom } from "@/lib/useRoom";
 import { didCreate, getStoredName, storeName } from "@/lib/session";
-import { MAX_NAME_LENGTH, normalizeName, type Player } from "@/lib/protocol";
+import { MAX_NAME_LENGTH, MIN_PLAYERS, normalizeName, type Player } from "@/lib/protocol";
 import { isValidRoomCode } from "@/lib/roomCode";
 
 export default function Lobby({ code }: { code: string }) {
@@ -91,10 +91,37 @@ function ConnectedLobby({
     );
   }
 
+  if (room?.phase === "playing") {
+    return (
+      <Shell>
+        <div className="panel">
+          <h2>Round in progress</h2>
+          <p className="codeDisplay">{code}</p>
+          <p className="hint">
+            {room.players.length} players are in. Role assignment and the packet feed
+            land in the next milestone — for now this screen just proves the round
+            started for everyone at once.
+          </p>
+        </div>
+        <div className="lobbyFoot">
+          <div className="status">
+            <span className="dot" />
+            <span>Linked to room server</span>
+          </div>
+          <button className="secondary" onClick={leave}>
+            Leave lobby
+          </button>
+        </div>
+      </Shell>
+    );
+  }
+
   // A code nobody created is a dead end, not a lobby that might fill up. Show
   // the error alone rather than pairing it with an empty, hopeful player list.
   const fatal = error?.code === "room_not_found";
   const youAreHost = room?.players.some((p) => p.id === youId && p.isHost) ?? false;
+  const playerCount = room?.players.length ?? 0;
+  const shortBy = MIN_PLAYERS - playerCount;
 
   return (
     <Shell>
@@ -169,6 +196,33 @@ function ConnectedLobby({
               </p>
             )}
           </div>
+
+          {room && (
+            <div className="panel startPanel">
+              {youAreHost ? (
+                <>
+                  <button
+                    className="start"
+                    disabled={shortBy > 0}
+                    onClick={() => send({ type: "startGame" })}
+                  >
+                    Start game
+                  </button>
+                  <p className="hint" style={{ margin: 0 }}>
+                    {shortBy > 0
+                      ? `Need ${shortBy} more ${shortBy === 1 ? "player" : "players"} — a round takes at least ${MIN_PLAYERS}.`
+                      : `${playerCount} players ready.`}
+                  </p>
+                </>
+              ) : (
+                <p className="subtitle" style={{ margin: 0 }}>
+                  {shortBy > 0
+                    ? `Waiting for ${shortBy} more ${shortBy === 1 ? "player" : "players"} — a round takes at least ${MIN_PLAYERS}.`
+                    : "Ready. Waiting for the host to start the round."}
+                </p>
+              )}
+            </div>
+          )}
 
           <div className="lobbyFoot">
             <div className="status">

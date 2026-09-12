@@ -58,7 +58,7 @@ environment variables and deploy the Next app. See `.env.example`.
 
 - [x] **1.** Scaffold, room-join flow end to end
 - [x] **2.** Lobby: host can kick players and transfer the host role
-- [ ] **2b.** Ready-up / start-game gate
+- [x] **2b.** Start-game gate (host only, minimum 3 players)
 - [ ] **3.** Role assignment, route to Benign monitor vs Hacker panel
 - [ ] **4.** Packet generator (pure function, 3 attack signatures)
 - [ ] **5.** Host generates feed -> server -> Benign players only
@@ -71,6 +71,9 @@ environment variables and deploy the Next app. See `.env.example`.
 - Room state is in-memory. If every player disconnects, the lobby's player list
   is gone (the "this code exists" marker is persisted, so the code still works).
 - No max player count or reconnect grace period yet.
+- A round that drops below 3 players mid-game keeps running; the minimum is
+  only checked at start.
+- Players can still join a room whose round has already started.
 - A kick bars the player's tab id for the room's lifetime. Someone who clears
   sessionStorage gets a fresh id and can rejoin; this stops accidents and
   laziness, not determination.

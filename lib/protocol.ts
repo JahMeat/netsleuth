@@ -34,7 +34,9 @@ export type ClientMessage =
   /** Host only: remove a player and bar them from rejoining this room. */
   | { type: "kick"; playerId: string }
   /** Host only: hand the host role to another player. */
-  | { type: "transferHost"; playerId: string };
+  | { type: "transferHost"; playerId: string }
+  /** Host only: leave the lobby and begin the round. */
+  | { type: "startGame" };
 
 export type ErrorCode =
   | "room_not_found"
@@ -42,7 +44,9 @@ export type ErrorCode =
   | "bad_message"
   | "not_host"
   | "unknown_player"
-  | "kicked";
+  | "kicked"
+  | "not_enough_players"
+  | "already_started";
 
 /** Server -> client. */
 export type ServerMessage =
@@ -58,6 +62,13 @@ export type ServerMessage =
   | { type: "error"; code: ErrorCode; message: string };
 
 export const MAX_NAME_LENGTH = 16;
+
+/**
+ * Social deduction needs a crowd to hide in. With two players the Hacker is
+ * whoever is not you, so the game does not exist below three. Shared by the
+ * client (to gate the button) and the server (to enforce it).
+ */
+export const MIN_PLAYERS = 3;
 
 /** Trim/clamp a display name. Returns null if nothing usable is left. */
 export function normalizeName(raw: unknown): string | null {
