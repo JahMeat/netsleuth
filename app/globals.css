@@ -293,9 +293,9 @@ button.mini {
   text-transform: uppercase;
   padding: 4px 9px;
   border-radius: 4px;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--muted);
+  border: 1px solid #35455a;
+  background: #1b2635;
+  color: var(--text);
 }
 
 button.mini:hover:not(:disabled) {

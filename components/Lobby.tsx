@@ -153,10 +153,22 @@ function ConnectedLobby({
                 {status === "connected" ? "Waiting for players…" : "Connecting…"}
               </p>
             )}
-            {youAreHost && room && room.players.length > 1 && (
+            {youAreHost && room && (
               <p className="hint">
-                You are the host: your browser will generate the packet feed. Hand it
-                off if you would rather play without that job.
+                {room.players.length > 1 ? (
+                  <>
+                    You are the host: your browser will generate the packet feed. Use{" "}
+                    <strong>make host</strong> to hand that job off, or <strong>kick</strong>{" "}
+                    to remove someone.
+                  </>
+                ) : (
+                  // Host controls act on *other* players, so there is nothing to
+                  // render while alone. Say so, or the feature reads as missing.
+                  <>
+                    You are the host. Once someone else joins, you can hand off the host
+                    role or remove them from here.
+                  </>
+                )}
               </p>
             )}
           </div>
