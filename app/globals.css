@@ -384,3 +384,385 @@ button.start {
   text-transform: uppercase;
   font-weight: 600;
 }
+
+/* --- game shell --- */
+
+.shell.wide {
+  max-width: 1220px;
+}
+
+.leaveTop {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 6px 12px;
+}
+
+.gameBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin-bottom: 14px;
+}
+
+.roleTag {
+  display: inline-block;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 4px;
+  margin-right: 12px;
+}
+
+.roleTag.benign {
+  color: var(--accent);
+  background: rgba(53, 214, 138, 0.12);
+  border: 1px solid var(--accent-dim);
+}
+
+.roleTag.hacker {
+  color: var(--danger);
+  background: rgba(255, 92, 114, 0.12);
+  border: 1px solid rgba(255, 92, 114, 0.45);
+}
+
+.roleTag.meeting {
+  color: var(--warn);
+  background: rgba(255, 184, 77, 0.12);
+  border: 1px solid rgba(255, 184, 77, 0.45);
+}
+
+.barHint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.barRight {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.barStat {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.clock {
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.clock.urgent {
+  color: var(--danger);
+}
+
+/* --- packet feed --- */
+
+.feedHead,
+.prow {
+  display: grid;
+  grid-template-columns: 56px 128px 128px 62px 62px 62px 74px 52px 1fr 62px;
+  gap: 8px;
+  padding: 5px 14px;
+  font-size: 12px;
+  align-items: center;
+}
+
+.feedHead {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 8px 8px 0 0;
+  border: 1px solid var(--border);
+  border-bottom-color: var(--border);
+}
+
+.feed {
+  height: 56vh;
+  min-height: 320px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+}
+
+.prow {
+  border-bottom: 1px solid rgba(34, 48, 63, 0.5);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.prow:hover {
+  background: var(--panel-2);
+}
+
+.prow .c-info {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+.prow .c-seq,
+.prow .c-len,
+.prow .c-port {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.prow.hit {
+  background: rgba(53, 214, 138, 0.09);
+}
+
+.prow.miss {
+  background: rgba(255, 184, 77, 0.07);
+}
+
+.flagBtn {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+}
+
+.prow:hover .flagBtn {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.flagMark {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.flagMark.hit {
+  color: var(--accent);
+}
+
+.flagMark.miss {
+  color: var(--warn);
+}
+
+.resume {
+  position: sticky;
+  bottom: 18px;
+  margin: 14px auto 0;
+  display: block;
+}
+
+/* --- hacker panel --- */
+
+.attackGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+button.attackCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+  padding: 20px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 92, 114, 0.35);
+  background: rgba(255, 92, 114, 0.06);
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+button.attackCard:hover:not(:disabled) {
+  background: rgba(255, 92, 114, 0.13);
+}
+
+.attackName {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--danger);
+  letter-spacing: 0.06em;
+}
+
+.attackBlurb {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.attackState {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
+
+/* --- takeover --- */
+
+.takeover {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  background: rgba(10, 0, 4, 0.94);
+  animation: glitch 0.35s steps(2) infinite;
+}
+
+@keyframes glitch {
+  0% { transform: translate(0, 0); }
+  50% { transform: translate(1px, -1px); }
+  100% { transform: translate(-1px, 1px); }
+}
+
+.takeoverInner {
+  text-align: center;
+  padding: 40px;
+}
+
+.takeoverTag {
+  font-size: 30px;
+  letter-spacing: 0.3em;
+  color: var(--danger);
+  margin: 0 0 14px;
+  font-weight: 700;
+}
+
+.takeoverBody {
+  color: #ffb9c2;
+  margin: 0 0 24px;
+  font-size: 14px;
+}
+
+.takeoverClock {
+  font-size: 44px;
+  color: var(--danger);
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- meeting --- */
+
+.evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.erow {
+  display: grid;
+  grid-template-columns: 84px 110px 1fr;
+  gap: 12px;
+  align-items: baseline;
+  padding: 9px 12px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.erow.hit {
+  border-color: var(--accent-dim);
+}
+
+.ebadge {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  padding: 3px 6px;
+  border-radius: 3px;
+  text-align: center;
+}
+
+.erow.hit .ebadge {
+  color: var(--accent);
+  background: rgba(53, 214, 138, 0.14);
+}
+
+.erow.miss .ebadge {
+  color: var(--muted);
+  background: #1b2635;
+}
+
+.eby {
+  color: var(--warn);
+}
+
+.einfo {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.einfo code {
+  color: var(--text);
+}
+
+.voteBtn {
+  font-size: 10px;
+  padding: 5px 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-left: 10px;
+}
+
+/* --- results --- */
+
+.verdict {
+  border-radius: 8px;
+  padding: 28px;
+  margin-bottom: 18px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.verdict.win {
+  border-color: var(--accent-dim);
+  background: rgba(53, 214, 138, 0.08);
+}
+
+.verdict.lose {
+  border-color: rgba(255, 92, 114, 0.45);
+  background: rgba(255, 92, 114, 0.08);
+}
+
+.verdictLine {
+  margin: 0 0 8px;
+  font-size: 26px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.verdict.win .verdictLine {
+  color: var(--accent);
+}
+
+.verdict.lose .verdictLine {
+  color: var(--danger);
+}
+
+.verdictSub {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}

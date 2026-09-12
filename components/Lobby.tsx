@@ -5,6 +5,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRoom } from "@/lib/useRoom";
 import { didCreate, getStoredName, storeName } from "@/lib/session";
 import { MAX_NAME_LENGTH, MIN_PLAYERS, normalizeName, type Player } from "@/lib/protocol";
+import {
+  BenignMonitor,
+  HackerPanel,
+  Meeting,
+  Results,
+  TakeoverOverlay,
+} from "./Game";
 import { isValidRoomCode } from "@/lib/roomCode";
 
 export default function Lobby({ code }: { code: string }) {
@@ -50,11 +57,21 @@ function ConnectedLobby({
   name: string;
   intent: "create" | "join";
 }) {
-  const { status, room, youId, error, kickedBy, hasLeft, leave, rejoin, send } = useRoom({
-    code,
-    name,
-    intent,
-  });
+  const {
+    status,
+    room,
+    youId,
+    role,
+    packets,
+    flags,
+    takeoverUntil,
+    error,
+    kickedBy,
+    hasLeft,
+    leave,
+    rejoin,
+    send,
+  } = useRoom({ code, name, intent });
 
   /** Which row has its overflow menu open. At most one at a time. */
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -91,28 +108,29 @@ function ConnectedLobby({
     );
   }
 
-  if (room?.phase === "playing") {
+  // Once the round starts, the screen you get depends on a role only the server
+  // knows. There is no client-side branch that could be flipped to see the
+  // other side: the Hacker is never *sent* the feed at all.
+  if (room && room.phase !== "lobby") {
     return (
-      <Shell>
-        <div className="panel">
-          <h2>Round in progress</h2>
-          <p className="codeDisplay">{code}</p>
-          <p className="hint">
-            {room.players.length} players are in. Role assignment and the packet feed
-            land in the next milestone — for now this screen just proves the round
-            started for everyone at once.
-          </p>
-        </div>
-        <div className="lobbyFoot">
-          <div className="status">
-            <span className="dot" />
-            <span>Linked to room server</span>
-          </div>
-          <button className="secondary" onClick={leave}>
-            Leave lobby
-          </button>
-        </div>
-      </Shell>
+      <GameShell code={code} phase={room.phase} onLeave={leave}>
+        {takeoverUntil !== null && takeoverUntil > Date.now() && (
+          <TakeoverOverlay until={takeoverUntil} />
+        )}
+
+        {room.phase === "playing" &&
+          (role === "hacker" ? (
+            <HackerPanel room={room} send={send} error={error} />
+          ) : (
+            <BenignMonitor room={room} packets={packets} flags={flags} send={send} />
+          ))}
+
+        {room.phase === "meeting" && (
+          <Meeting room={room} youId={youId} role={role} send={send} />
+        )}
+
+        {room.phase === "ended" && <Results room={room} />}
+      </GameShell>
     );
   }
 
@@ -374,6 +392,31 @@ function NameGate({
         </div>
       </div>
     </Shell>
+  );
+}
+
+function GameShell({
+  code,
+  phase,
+  onLeave,
+  children,
+}: {
+  code: string;
+  phase: string;
+  onLeave: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <main className="shell wide">
+      <div className="brand">
+        <h1>Netsleuth</h1>
+        <span className="tag">// {phase === "playing" ? code : phase}</span>
+        <button className="secondary leaveTop" onClick={onLeave}>
+          Leave
+        </button>
+      </div>
+      {children}
+    </main>
   );
 }
 

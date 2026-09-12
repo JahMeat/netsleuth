@@ -9,7 +9,10 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "deploy:party": "partykit deploy"
+    "deploy:party": "partykit deploy",
+    "dev:party:fast": "partykit dev --var ROUND_MS=20000 --var MEETING_MS=25000",
+    "test:feed": "tsx scripts/feed-demo.mts",
+    "test:game": "tsx scripts/game-test.mts"
   },
   "dependencies": {
     "next": "16.3.5",
@@ -23,6 +26,7 @@
     "@types/react-dom": "^19",
     "concurrently": "^10.0.5",
     "partykit": "^0.0.115",
+    "tsx": "^4.23.13",
     "typescript": "^5"
   }
 }

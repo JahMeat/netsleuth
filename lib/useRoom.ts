@@ -4,42 +4,42 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import usePartySocket from "partysocket/react";
 import { PARTYKIT_HOST } from "./partyHost";
 import { getTabId } from "./session";
-import type { ClientMessage, ErrorCode, RoomSnapshot, ServerMessage } from "./protocol";
+import { createFeed, type Feed } from "./packets";
+import {
+  FEED_WINDOW,
+  type ClientMessage,
+  type ErrorCode,
+  type Packet,
+  type Role,
+  type RoomSnapshot,
+  type ServerMessage,
+} from "./protocol";
 
 export type ConnectionStatus = "idle" | "connecting" | "connected" | "closed";
 
+/** How often the host's browser produces a tick of traffic. */
+const TICK_MS = 900;
+
 export interface UseRoomResult {
   status: ConnectionStatus;
-  /** Latest room state from the server, or null before the first snapshot. */
   room: RoomSnapshot | null;
-  /** This connection's player id, for picking yourself out of `room.players`. */
   youId: string | null;
+  /** Your private role, or null while in the lobby. */
+  role: Role | null;
+  /** Benign only: the rolling packet window. */
+  packets: Packet[];
+  /** Sequence numbers you flagged, mapped to whether they were real. */
+  flags: Map<number, boolean>;
+  /** Epoch ms until which your screen is seized, or null. */
+  takeoverUntil: number | null;
   error: { code: ErrorCode; message: string } | null;
-  /** Set once the host removes you. Terminal: the socket stays closed. */
   kickedBy: string | null;
-  /** True once you have deliberately left. Terminal, like being kicked. */
   hasLeft: boolean;
-  /**
-   * Leave the lobby on purpose. Closing the tab does the same thing — the
-   * server drops you when the socket closes either way — but this makes it a
-   * choice rather than something you have to know.
-   */
   leave: () => void;
-  /**
-   * Undo a leave. Needed as an explicit action because the leave screen lives at
-   * the room URL: navigating to /room/CODE from there is a no-op route change,
-   * so the component never remounts and `hasLeft` would survive the trip.
-   */
   rejoin: () => void;
   send: (msg: ClientMessage) => void;
 }
 
-/**
- * Connects to one PartyKit room and keeps a mirror of its state.
- *
- * The room server is the single source of truth: this hook never mutates
- * `room` locally, it only replaces it with whatever the server last sent.
- */
 export function useRoom(options: {
   code: string;
   name: string;
@@ -51,35 +51,39 @@ export function useRoom(options: {
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [room, setRoom] = useState<RoomSnapshot | null>(null);
   const [youId, setYouId] = useState<string | null>(null);
+  const [role, setRole] = useState<Role | null>(null);
+  const [packets, setPackets] = useState<Packet[]>([]);
+  const [flags, setFlags] = useState<Map<number, boolean>>(new Map());
+  const [takeoverUntil, setTakeoverUntil] = useState<number | null>(null);
   const [error, setError] = useState<UseRoomResult["error"]>(null);
   const [kickedBy, setKickedBy] = useState<string | null>(null);
   const [hasLeft, setHasLeft] = useState(false);
 
-  // sessionStorage is unavailable during SSR, so identity resolves post-mount
-  // and the socket stays disabled until then.
   useEffect(() => setTabId(getTabId()), []);
 
-  // Kept in a ref so the socket's onOpen callback always sees current values
-  // without needing to tear the connection down and rebuild it.
   const helloRef = useRef({ name, intent });
   helloRef.current = { name, intent };
+
+  /**
+   * The host's traffic generator. Held in a ref because it is long-lived,
+   * stateful, and must survive re-renders without being rebuilt — rebuilding it
+   * would reset sequence numbers mid-round and make the feed obviously fake.
+   */
+  const feedRef = useRef<Feed | null>(null);
 
   const socket = usePartySocket({
     host: PARTYKIT_HOST,
     room: code,
     id: tabId ?? undefined,
-    // Being kicked or leaving disables the socket outright. Without this,
-    // partysocket's automatic reconnect would immediately dial back in — into a
-    // room the server has barred us from, or one we just chose to quit.
     enabled: tabId !== null && kickedBy === null && !hasLeft,
 
     onOpen() {
       setStatus("connected");
       setError(null);
-      // Re-announced on every open, so an automatic reconnect re-seats the
-      // player rather than leaving them invisible to everyone else.
       const { name, intent } = helloRef.current;
-      socket.send(JSON.stringify({ type: "hello", intent, name } satisfies ClientMessage));
+      socket.send(
+        JSON.stringify({ type: "hello", intent, name } satisfies ClientMessage),
+      );
     },
 
     onMessage(event: MessageEvent) {
@@ -89,13 +93,38 @@ export function useRoom(options: {
       } catch {
         return;
       }
-      if (msg.type === "snapshot") {
-        setRoom(msg.room);
-        setYouId(msg.youId);
-      } else if (msg.type === "kicked") {
-        setKickedBy(msg.byName);
-      } else if (msg.type === "error") {
-        setError({ code: msg.code, message: msg.message });
+
+      switch (msg.type) {
+        case "snapshot":
+          setRoom(msg.room);
+          setYouId(msg.youId);
+          break;
+        case "role":
+          setRole(msg.role);
+          break;
+        case "packets":
+          // Bounded window: a long round would otherwise grow this forever and
+          // drag the render down with it.
+          setPackets((cur) => {
+            const next = cur.concat(msg.packets);
+            return next.length > FEED_WINDOW ? next.slice(-FEED_WINDOW) : next;
+          });
+          break;
+        case "inject":
+          feedRef.current?.inject(msg.kind, msg.victimLabel);
+          break;
+        case "takeover":
+          setTakeoverUntil(msg.untilMs);
+          break;
+        case "flagAck":
+          setFlags((cur) => new Map(cur).set(msg.seq, msg.hit));
+          break;
+        case "kicked":
+          setKickedBy(msg.byName);
+          break;
+        case "error":
+          setError({ code: msg.code, message: msg.message });
+          break;
       }
     },
 
@@ -113,14 +142,57 @@ export function useRoom(options: {
     [socket],
   );
 
+  const youAreHost = room?.players.some((p) => p.id === youId && p.isHost) ?? false;
+  const playing = room?.phase === "playing";
+
+  /**
+   * Host-authoritative generation: only the host's browser produces traffic, and
+   * it ships every tick to the server, which decides who is allowed to see it.
+   */
+  useEffect(() => {
+    if (!youAreHost || !playing) return;
+
+    if (!feedRef.current) feedRef.current = createFeed();
+    const feed = feedRef.current;
+
+    const id = setInterval(() => {
+      const batch = feed.tick();
+      if (batch.length > 0) send({ type: "feed", packets: batch });
+    }, TICK_MS);
+
+    return () => clearInterval(id);
+  }, [youAreHost, playing, send]);
+
+  // A new round deserves a fresh network and fresh sequence numbers.
+  useEffect(() => {
+    if (room?.phase === "lobby") {
+      feedRef.current = null;
+      setPackets([]);
+      setFlags(new Map());
+      setRole(null);
+    }
+  }, [room?.phase]);
+
   const leave = useCallback(() => {
     setHasLeft(true);
     socket.close();
   }, [socket]);
 
-  // Re-enabling the socket reconnects it, and onOpen re-sends `hello`, which
-  // re-seats the player. No extra message type needed.
   const rejoin = useCallback(() => setHasLeft(false), []);
 
-  return { status, room, youId, error, kickedBy, hasLeft, leave, rejoin, send };
+  return {
+    status,
+    room,
+    youId,
+    role,
+    packets,
+    flags,
+    takeoverUntil,
+    error,
+    kickedBy,
+    hasLeft,
+    leave,
+    rejoin,
+    send,
+  };
 }
