@@ -17,6 +17,20 @@ export interface UseRoomResult {
   error: { code: ErrorCode; message: string } | null;
   /** Set once the host removes you. Terminal: the socket stays closed. */
   kickedBy: string | null;
+  /** True once you have deliberately left. Terminal, like being kicked. */
+  hasLeft: boolean;
+  /**
+   * Leave the lobby on purpose. Closing the tab does the same thing — the
+   * server drops you when the socket closes either way — but this makes it a
+   * choice rather than something you have to know.
+   */
+  leave: () => void;
+  /**
+   * Undo a leave. Needed as an explicit action because the leave screen lives at
+   * the room URL: navigating to /room/CODE from there is a no-op route change,
+   * so the component never remounts and `hasLeft` would survive the trip.
+   */
+  rejoin: () => void;
   send: (msg: ClientMessage) => void;
 }
 
@@ -39,6 +53,7 @@ export function useRoom(options: {
   const [youId, setYouId] = useState<string | null>(null);
   const [error, setError] = useState<UseRoomResult["error"]>(null);
   const [kickedBy, setKickedBy] = useState<string | null>(null);
+  const [hasLeft, setHasLeft] = useState(false);
 
   // sessionStorage is unavailable during SSR, so identity resolves post-mount
   // and the socket stays disabled until then.
@@ -53,10 +68,10 @@ export function useRoom(options: {
     host: PARTYKIT_HOST,
     room: code,
     id: tabId ?? undefined,
-    // Being kicked disables the socket outright. Without this, partysocket's
-    // automatic reconnect would immediately dial back into a room the server
-    // has already barred us from, producing an endless connect/close loop.
-    enabled: tabId !== null && kickedBy === null,
+    // Being kicked or leaving disables the socket outright. Without this,
+    // partysocket's automatic reconnect would immediately dial back in — into a
+    // room the server has barred us from, or one we just chose to quit.
+    enabled: tabId !== null && kickedBy === null && !hasLeft,
 
     onOpen() {
       setStatus("connected");
@@ -98,5 +113,14 @@ export function useRoom(options: {
     [socket],
   );
 
-  return { status, room, youId, error, kickedBy, send };
+  const leave = useCallback(() => {
+    setHasLeft(true);
+    socket.close();
+  }, [socket]);
+
+  // Re-enabling the socket reconnects it, and onOpen re-sends `hello`, which
+  // re-seats the player. No extra message type needed.
+  const rejoin = useCallback(() => setHasLeft(false), []);
+
+  return { status, room, youId, error, kickedBy, hasLeft, leave, rejoin, send };
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRoom } from "@/lib/useRoom";
 import { didCreate, getStoredName, storeName } from "@/lib/session";
 import { MAX_NAME_LENGTH, normalizeName, type Player } from "@/lib/protocol";
@@ -50,11 +50,15 @@ function ConnectedLobby({
   name: string;
   intent: "create" | "join";
 }) {
-  const { status, room, youId, error, kickedBy, send } = useRoom({ code, name, intent });
+  const { status, room, youId, error, kickedBy, hasLeft, leave, rejoin, send } = useRoom({
+    code,
+    name,
+    intent,
+  });
 
-  // Which player a host action is awaiting confirmation for. Kicking is not
-  // undoable, so it takes two clicks rather than one stray one.
-  const [pending, setPending] = useState<{ action: "kick" | "host"; id: string } | null>(null);
+  /** Which row has its overflow menu open. At most one at a time. */
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const closeMenu = useCallback(() => setOpenMenu(null), []);
 
   if (kickedBy) {
     return (
@@ -67,23 +71,30 @@ function ConnectedLobby({
     );
   }
 
+  if (hasLeft) {
+    return (
+      <Shell>
+        <div className="panel">
+          <h2>Left lobby</h2>
+          <p className="subtitle" style={{ margin: 0 }}>
+            You left <strong>{code}</strong>. Rejoin with the same code if you were not
+            done.
+          </p>
+        </div>
+        <div className="row">
+          <button onClick={rejoin}>Rejoin {code}</button>
+          <Link href="/">
+            <button className="secondary">Back to start</button>
+          </Link>
+        </div>
+      </Shell>
+    );
+  }
+
   // A code nobody created is a dead end, not a lobby that might fill up. Show
   // the error alone rather than pairing it with an empty, hopeful player list.
   const fatal = error?.code === "room_not_found";
   const youAreHost = room?.players.some((p) => p.id === youId && p.isHost) ?? false;
-
-  function act(action: "kick" | "host", target: Player) {
-    if (pending?.action === action && pending.id === target.id) {
-      send(
-        action === "kick"
-          ? { type: "kick", playerId: target.id }
-          : { type: "transferHost", playerId: target.id },
-      );
-      setPending(null);
-    } else {
-      setPending({ action, id: target.id });
-    }
-  }
 
   return (
     <Shell>
@@ -113,40 +124,27 @@ function ConnectedLobby({
             <h2>Players {room ? `(${room.players.length})` : ""}</h2>
             {room && room.players.length > 0 ? (
               <ul className="playerList">
-                {room.players.map((p) => {
-                  const isYou = p.id === youId;
-                  const pendingKick = pending?.action === "kick" && pending.id === p.id;
-                  const pendingHost = pending?.action === "host" && pending.id === p.id;
-                  return (
-                    <li key={p.id} className={isYou ? "you" : undefined}>
-                      <span className="dot" />
-                      <span className="pname">{p.name}</span>
-                      {isYou && <span className="badge">you</span>}
-                      {p.isHost && <span className="badge host">host</span>}
-
-                      {youAreHost && !isYou && (
-                        <span className="actions">
-                          <button
-                            className={`mini ${pendingHost ? "confirm" : ""}`}
-                            onClick={() => act("host", p)}
-                            onBlur={() => pendingHost && setPending(null)}
-                            title={`Make ${p.name} the host`}
-                          >
-                            {pendingHost ? "confirm?" : "make host"}
-                          </button>
-                          <button
-                            className={`mini danger ${pendingKick ? "confirm" : ""}`}
-                            onClick={() => act("kick", p)}
-                            onBlur={() => pendingKick && setPending(null)}
-                            title={`Remove ${p.name} from the lobby`}
-                          >
-                            {pendingKick ? "confirm?" : "kick"}
-                          </button>
-                        </span>
-                      )}
-                    </li>
-                  );
-                })}
+                {room.players.map((p) => (
+                  <PlayerRow
+                    key={p.id}
+                    player={p}
+                    isYou={p.id === youId}
+                    showMenu={youAreHost && p.id !== youId}
+                    menuOpen={openMenu === p.id}
+                    onToggleMenu={() =>
+                      setOpenMenu((cur) => (cur === p.id ? null : p.id))
+                    }
+                    onCloseMenu={closeMenu}
+                    onMakeHost={() => {
+                      send({ type: "transferHost", playerId: p.id });
+                      closeMenu();
+                    }}
+                    onKick={() => {
+                      send({ type: "kick", playerId: p.id });
+                      closeMenu();
+                    }}
+                  />
+                ))}
               </ul>
             ) : (
               <p className="subtitle" style={{ margin: 0 }}>
@@ -157,39 +155,133 @@ function ConnectedLobby({
               <p className="hint">
                 {room.players.length > 1 ? (
                   <>
-                    You are the host: your browser will generate the packet feed. Use{" "}
-                    <strong>make host</strong> to hand that job off, or <strong>kick</strong>{" "}
-                    to remove someone.
+                    You are the host: your browser will generate the packet feed. The{" "}
+                    <strong>&middot;&middot;&middot;</strong> menu on a player lets you
+                    hand off that job or remove them.
                   </>
                 ) : (
-                  // Host controls act on *other* players, so there is nothing to
-                  // render while alone. Say so, or the feature reads as missing.
                   <>
-                    You are the host. Once someone else joins, you can hand off the host
-                    role or remove them from here.
+                    You are the host. Once someone else joins, a{" "}
+                    <strong>&middot;&middot;&middot;</strong> menu on their row lets you
+                    hand off the host role or remove them.
                   </>
                 )}
               </p>
             )}
           </div>
 
-          <div className="status">
-            <span
-              className={`dot ${
-                status === "connected" ? "" : status === "closed" ? "closed" : "connecting"
-              }`}
-            />
-            <span>
-              {status === "connected"
-                ? "Linked to room server"
-                : status === "closed"
-                  ? "Disconnected — retrying"
-                  : "Connecting to room server…"}
-            </span>
+          <div className="lobbyFoot">
+            <div className="status">
+              <span
+                className={`dot ${
+                  status === "connected"
+                    ? ""
+                    : status === "closed"
+                      ? "closed"
+                      : "connecting"
+                }`}
+              />
+              <span>
+                {status === "connected"
+                  ? "Linked to room server"
+                  : status === "closed"
+                    ? "Disconnected — retrying"
+                    : "Connecting to room server…"}
+              </span>
+            </div>
+            <button className="secondary" onClick={leave}>
+              Leave lobby
+            </button>
           </div>
         </>
       )}
     </Shell>
+  );
+}
+
+function PlayerRow({
+  player,
+  isYou,
+  showMenu,
+  menuOpen,
+  onToggleMenu,
+  onCloseMenu,
+  onMakeHost,
+  onKick,
+}: {
+  player: Player;
+  isYou: boolean;
+  showMenu: boolean;
+  menuOpen: boolean;
+  onToggleMenu: () => void;
+  onCloseMenu: () => void;
+  onMakeHost: () => void;
+  onKick: () => void;
+}) {
+  const wrapRef = useRef<HTMLSpanElement>(null);
+  // Kicking is not undoable, so the item arms on first click, commits on second.
+  const [kickArmed, setKickArmed] = useState(false);
+
+  // Reset arming whenever the menu closes, so reopening never starts hot.
+  useEffect(() => {
+    if (!menuOpen) setKickArmed(false);
+  }, [menuOpen]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+
+    function onPointerDown(e: PointerEvent) {
+      if (!wrapRef.current?.contains(e.target as Node)) onCloseMenu();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onCloseMenu();
+    }
+
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen, onCloseMenu]);
+
+  return (
+    <li className={isYou ? "you" : undefined}>
+      <span className="dot" />
+      <span className="pname">{player.name}</span>
+      {isYou && <span className="badge">you</span>}
+      {player.isHost && <span className="badge host">host</span>}
+
+      {showMenu && (
+        <span className="menuWrap" ref={wrapRef}>
+          <button
+            className="dots"
+            onClick={onToggleMenu}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-label={`Actions for ${player.name}`}
+            title={`Actions for ${player.name}`}
+          >
+            &middot;&middot;&middot;
+          </button>
+
+          {menuOpen && (
+            <span className="menu" role="menu">
+              <button role="menuitem" onClick={onMakeHost}>
+                Make host
+              </button>
+              <button
+                role="menuitem"
+                className={`danger ${kickArmed ? "armed" : ""}`}
+                onClick={() => (kickArmed ? onKick() : setKickArmed(true))}
+              >
+                {kickArmed ? "Confirm kick" : "Kick from lobby"}
+              </button>
+            </span>
+          )}
+        </span>
+      )}
+    </li>
   );
 }
 
