@@ -625,8 +625,8 @@ const REASONS: Record<EndReason, string> = {
   tasks_complete: "Every task was finished.",
   hacker_ejected: "The room voted out the hacker.",
   time_expired: "The clock ran out with work outstanding.",
-  analysts_outnumbered: "Too few analysts left to finish the work.",
-  hacker_left: "The hacker left the room.",
+  analysts_outnumbered: "Only one analyst was left standing.",
+  hacker_left: "The hacker disconnected and forfeited the round.",
 };
 
 export function Results({

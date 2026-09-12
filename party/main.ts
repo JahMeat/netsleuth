@@ -507,7 +507,13 @@ export default class NetsleuthRoom implements Party.Server {
     this.result = {
       hackerId,
       hackerName: hacker?.name ?? "(left the room)",
-      benignWin: reason === "tasks_complete" || reason === "hacker_ejected",
+      // A hacker who disconnects has forfeited: the threat is gone, so the
+      // analysts take it. Counting that as a hacker win would mean quitting
+      // beat playing.
+      benignWin:
+        reason === "tasks_complete" ||
+        reason === "hacker_ejected" ||
+        reason === "hacker_left",
       reason,
       progress: this.progress(),
       hits,

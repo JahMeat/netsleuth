@@ -134,7 +134,14 @@ on a page that does not exist.
 npm run test:feed      # print every packet shape, with hostile ones marked
 npm run test:game      # drive a full round over raw WebSocket
 npm run test:restart   # two rounds back to back, checking nothing carries over
+npm run test:readme    # every claim the player manual makes, checked
 ```
+
+`test:readme` is worth keeping green. The manual is the first thing a new player
+reads, so a number that drifts there teaches the wrong game. It holds the README
+to its own quoted phrases: the timings, the task shapes, every feed line it
+prints, and the behaviour it promises (a tie ejects nobody, the hacker can call
+a meeting, a hacker who quits forfeits).
 
 Both socket tests need a room server running (`npm run dev:party`) and neither
 depends on how it was launched.

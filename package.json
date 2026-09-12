@@ -13,7 +13,8 @@
     "dev:party:fast": "partykit dev --var ROUND_MS=120000 --var MEETING_MS=45000 --var SCAN_MS=3000",
     "test:restart": "tsx scripts/restart-test.mts",
     "deploy": "next build && partykit deploy",
-    "preview": "next build && partykit dev"
+    "preview": "next build && partykit dev",
+    "test:readme": "tsx scripts/readme-audit.mts"
   },
   "dependencies": {
     "next": "16.3.5",

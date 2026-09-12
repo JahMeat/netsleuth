@@ -62,8 +62,9 @@ A round is **5 minutes**.
 
 You have two jobs and **you cannot do both at once**. That is the game.
 
-**Job one: do your tasks.** Four of them — type a phrase, clear six alerts, wind
-a handle ten times. They're easy. They just need attention.
+**Job one: do your tasks.** Four of them, drawn from three kinds: type a phrase,
+clear six alerts, wind a handle ten times. They're easy. They just need
+attention.
 
 **Job two: watch the wire.** Every packet has a source address. Hostile traffic
 looks nothing like ordinary work once you've seen it (see below). Hit **flag**
@@ -91,8 +92,9 @@ work is the only thing keeping you from being the obvious silent address.
 You have three tools, in the order you'll use them:
 
 **1. Sweep** — pick a player and hunt for their address. Takes **6 seconds** to
-come back, then a **20-second** cooldown. This is loud: everyone sees a sweep
-happen. They can't tell it was you — but they'll know someone's hunting.
+come back, then a **20-second** cooldown. This is loud: the sweep goes out from
+your address, so everyone watching sees it *and* sees which address sent it.
+What they don't know is that the address is yours.
 
 **2. Compromise** — kill an address you've already swept for. The game refuses
 any address you haven't found. **35 seconds** between kills. A compromised
@@ -200,6 +202,9 @@ Claiming it is a move — and so is staying quiet. So is lying.
 You get **75 seconds** and one vote each. **A tie throws nobody out.** You can
 skip.
 
+**The round clock does not stop.** A meeting is 75 seconds off your 5 minutes, so
+calling one is a real cost to the analysts even when it catches somebody.
+
 Voting out an analyst doesn't end the round — they become a spectator, and their
 unfinished tasks come off the bar, so a wrong vote costs you time but never
 makes the game unwinnable.
@@ -214,7 +219,9 @@ makes the game unwinnable.
 
 **The hacker wins when:**
 - the 5 minutes run out with work unfinished, or
-- only one analyst is left standing
+- only one analyst is left standing — compromised, voted out, or simply gone
+
+If the hacker disconnects, they forfeit and the analysts take it.
 
 Then you see who it was, why it ended, and a scoreboard: tasks done, correct
 flags, wrong flags. The host can hit **Play again** — everyone gets new roles,
