@@ -30,14 +30,32 @@ export interface RoomSnapshot {
 /** Client -> server. */
 export type ClientMessage =
   /** Claim a seat. `intent` distinguishes opening a new lobby from joining one. */
-  | { type: "hello"; intent: "create" | "join"; name: string };
+  | { type: "hello"; intent: "create" | "join"; name: string }
+  /** Host only: remove a player and bar them from rejoining this room. */
+  | { type: "kick"; playerId: string }
+  /** Host only: hand the host role to another player. */
+  | { type: "transferHost"; playerId: string };
+
+export type ErrorCode =
+  | "room_not_found"
+  | "name_taken"
+  | "bad_message"
+  | "not_host"
+  | "unknown_player"
+  | "kicked";
 
 /** Server -> client. */
 export type ServerMessage =
   /** Full room state. Sent on join and after any change. */
   | { type: "snapshot"; room: RoomSnapshot; youId: string }
+  /**
+   * You were removed by the host. Sent immediately before the server closes the
+   * connection, so the client can stop reconnecting instead of fighting to get
+   * back into a room it is barred from.
+   */
+  | { type: "kicked"; byName: string }
   /** Recoverable problem, e.g. joining a code that was never created. */
-  | { type: "error"; code: "room_not_found" | "name_taken" | "bad_message"; message: string };
+  | { type: "error"; code: ErrorCode; message: string };
 
 export const MAX_NAME_LENGTH = 16;
 

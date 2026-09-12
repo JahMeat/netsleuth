@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import usePartySocket from "partysocket/react";
 import { PARTYKIT_HOST } from "./partyHost";
 import { getTabId } from "./session";
-import type { ClientMessage, RoomSnapshot, ServerMessage } from "./protocol";
+import type { ClientMessage, ErrorCode, RoomSnapshot, ServerMessage } from "./protocol";
 
 export type ConnectionStatus = "idle" | "connecting" | "connected" | "closed";
 
@@ -14,7 +14,9 @@ export interface UseRoomResult {
   room: RoomSnapshot | null;
   /** This connection's player id, for picking yourself out of `room.players`. */
   youId: string | null;
-  error: { code: string; message: string } | null;
+  error: { code: ErrorCode; message: string } | null;
+  /** Set once the host removes you. Terminal: the socket stays closed. */
+  kickedBy: string | null;
   send: (msg: ClientMessage) => void;
 }
 
@@ -36,6 +38,7 @@ export function useRoom(options: {
   const [room, setRoom] = useState<RoomSnapshot | null>(null);
   const [youId, setYouId] = useState<string | null>(null);
   const [error, setError] = useState<UseRoomResult["error"]>(null);
+  const [kickedBy, setKickedBy] = useState<string | null>(null);
 
   // sessionStorage is unavailable during SSR, so identity resolves post-mount
   // and the socket stays disabled until then.
@@ -50,7 +53,10 @@ export function useRoom(options: {
     host: PARTYKIT_HOST,
     room: code,
     id: tabId ?? undefined,
-    enabled: tabId !== null,
+    // Being kicked disables the socket outright. Without this, partysocket's
+    // automatic reconnect would immediately dial back into a room the server
+    // has already barred us from, producing an endless connect/close loop.
+    enabled: tabId !== null && kickedBy === null,
 
     onOpen() {
       setStatus("connected");
@@ -71,6 +77,8 @@ export function useRoom(options: {
       if (msg.type === "snapshot") {
         setRoom(msg.room);
         setYouId(msg.youId);
+      } else if (msg.type === "kicked") {
+        setKickedBy(msg.byName);
       } else if (msg.type === "error") {
         setError({ code: msg.code, message: msg.message });
       }
@@ -90,5 +98,5 @@ export function useRoom(options: {
     [socket],
   );
 
-  return { status, room, youId, error, send };
+  return { status, room, youId, error, kickedBy, send };
 }

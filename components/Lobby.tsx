@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRoom } from "@/lib/useRoom";
 import { didCreate, getStoredName, storeName } from "@/lib/session";
-import { MAX_NAME_LENGTH, normalizeName } from "@/lib/protocol";
+import { MAX_NAME_LENGTH, normalizeName, type Player } from "@/lib/protocol";
 import { isValidRoomCode } from "@/lib/roomCode";
 
 export default function Lobby({ code }: { code: string }) {
@@ -25,12 +25,12 @@ export default function Lobby({ code }: { code: string }) {
         <div className="error">
           <strong>{code || "(empty)"}</strong> is not a valid room code.
         </div>
-        <Link href="/">← Back to start</Link>
+        <Link href="/">&larr; Back to start</Link>
       </Shell>
     );
   }
 
-  if (!ready) return <Shell><p className="subtitle">Loading…</p></Shell>;
+  if (!ready) return <Shell><p className="subtitle">Loading&hellip;</p></Shell>;
 
   // Someone opened a shared room link directly, so they never passed through
   // the landing page and have no name yet.
@@ -50,11 +50,40 @@ function ConnectedLobby({
   name: string;
   intent: "create" | "join";
 }) {
-  const { status, room, youId, error } = useRoom({ code, name, intent });
+  const { status, room, youId, error, kickedBy, send } = useRoom({ code, name, intent });
+
+  // Which player a host action is awaiting confirmation for. Kicking is not
+  // undoable, so it takes two clicks rather than one stray one.
+  const [pending, setPending] = useState<{ action: "kick" | "host"; id: string } | null>(null);
+
+  if (kickedBy) {
+    return (
+      <Shell>
+        <div className="error">
+          You were removed from lobby <strong>{code}</strong> by {kickedBy}.
+        </div>
+        <Link href="/">&larr; Back to start</Link>
+      </Shell>
+    );
+  }
 
   // A code nobody created is a dead end, not a lobby that might fill up. Show
   // the error alone rather than pairing it with an empty, hopeful player list.
   const fatal = error?.code === "room_not_found";
+  const youAreHost = room?.players.some((p) => p.id === youId && p.isHost) ?? false;
+
+  function act(action: "kick" | "host", target: Player) {
+    if (pending?.action === action && pending.id === target.id) {
+      send(
+        action === "kick"
+          ? { type: "kick", playerId: target.id }
+          : { type: "transferHost", playerId: target.id },
+      );
+      setPending(null);
+    } else {
+      setPending({ action, id: target.id });
+    }
+  }
 
   return (
     <Shell>
@@ -69,10 +98,12 @@ function ConnectedLobby({
         )}
       </div>
 
-      {error && (
+      {error && !fatal && error.code !== "not_host" && (
+        <div className="error">{error.message}</div>
+      )}
+      {fatal && (
         <div className="error">
-          {error.message}{" "}
-          {fatal && <Link href="/">Start a new lobby &rarr;</Link>}
+          {error.message} <Link href="/">Start a new lobby &rarr;</Link>
         </div>
       )}
 
@@ -82,18 +113,50 @@ function ConnectedLobby({
             <h2>Players {room ? `(${room.players.length})` : ""}</h2>
             {room && room.players.length > 0 ? (
               <ul className="playerList">
-                {room.players.map((p) => (
-                  <li key={p.id} className={p.id === youId ? "you" : undefined}>
-                    <span className="dot" />
-                    <span className="pname">{p.name}</span>
-                    {p.id === youId && <span className="badge">you</span>}
-                    {p.isHost && <span className="badge host">host</span>}
-                  </li>
-                ))}
+                {room.players.map((p) => {
+                  const isYou = p.id === youId;
+                  const pendingKick = pending?.action === "kick" && pending.id === p.id;
+                  const pendingHost = pending?.action === "host" && pending.id === p.id;
+                  return (
+                    <li key={p.id} className={isYou ? "you" : undefined}>
+                      <span className="dot" />
+                      <span className="pname">{p.name}</span>
+                      {isYou && <span className="badge">you</span>}
+                      {p.isHost && <span className="badge host">host</span>}
+
+                      {youAreHost && !isYou && (
+                        <span className="actions">
+                          <button
+                            className={`mini ${pendingHost ? "confirm" : ""}`}
+                            onClick={() => act("host", p)}
+                            onBlur={() => pendingHost && setPending(null)}
+                            title={`Make ${p.name} the host`}
+                          >
+                            {pendingHost ? "confirm?" : "make host"}
+                          </button>
+                          <button
+                            className={`mini danger ${pendingKick ? "confirm" : ""}`}
+                            onClick={() => act("kick", p)}
+                            onBlur={() => pendingKick && setPending(null)}
+                            title={`Remove ${p.name} from the lobby`}
+                          >
+                            {pendingKick ? "confirm?" : "kick"}
+                          </button>
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             ) : (
               <p className="subtitle" style={{ margin: 0 }}>
                 {status === "connected" ? "Waiting for players…" : "Connecting…"}
+              </p>
+            )}
+            {youAreHost && room && room.players.length > 1 && (
+              <p className="hint">
+                You are the host: your browser will generate the packet feed. Hand it
+                off if you would rather play without that job.
               </p>
             )}
           </div>

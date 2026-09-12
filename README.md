@@ -57,7 +57,8 @@ environment variables and deploy the Next app. See `.env.example`.
 ## Build milestones
 
 - [x] **1.** Scaffold, room-join flow end to end
-- [ ] **2.** Lobby polish: ready-up, start-game gate
+- [x] **2.** Lobby: host can kick players and transfer the host role
+- [ ] **2b.** Ready-up / start-game gate
 - [ ] **3.** Role assignment, route to Benign monitor vs Hacker panel
 - [ ] **4.** Packet generator (pure function, 3 attack signatures)
 - [ ] **5.** Host generates feed -> server -> Benign players only
@@ -70,3 +71,6 @@ environment variables and deploy the Next app. See `.env.example`.
 - Room state is in-memory. If every player disconnects, the lobby's player list
   is gone (the "this code exists" marker is persisted, so the code still works).
 - No max player count or reconnect grace period yet.
+- A kick bars the player's tab id for the room's lifetime. Someone who clears
+  sessionStorage gets a fresh id and can rejoin; this stops accidents and
+  laziness, not determination.

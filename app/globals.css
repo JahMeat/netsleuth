@@ -278,3 +278,46 @@ button.secondary:hover:not(:disabled) {
 a {
   color: var(--accent);
 }
+
+/* --- host controls --- */
+
+.actions {
+  display: flex;
+  gap: 6px;
+  margin-left: 10px;
+}
+
+button.mini {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 4px 9px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+}
+
+button.mini:hover:not(:disabled) {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+button.mini.danger:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: rgba(255, 92, 114, 0.4);
+  background: rgba(255, 92, 114, 0.08);
+}
+
+/* Second click commits. Colour shift is the only warning a lobby needs. */
+button.mini.confirm {
+  color: var(--warn);
+  border-color: rgba(255, 184, 77, 0.5);
+  background: rgba(255, 184, 77, 0.12);
+}
+
+button.mini.danger.confirm {
+  color: var(--danger);
+  border-color: rgba(255, 92, 114, 0.55);
+  background: rgba(255, 92, 114, 0.14);
+}
