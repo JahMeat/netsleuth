@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import usePartySocket from "partysocket/react";
-import { PARTYKIT_HOST } from "./partyHost";
+import { getPartyHost } from "./partyHost";
 import { getTabId } from "./session";
 
 import {
@@ -82,7 +82,7 @@ export function useRoom(options: {
   helloRef.current = { name, intent };
 
   const socket = usePartySocket({
-    host: PARTYKIT_HOST,
+    host: getPartyHost(),
     room: code,
     id: tabId ?? undefined,
     enabled: tabId !== null && kickedBy === null && !hasLeft,

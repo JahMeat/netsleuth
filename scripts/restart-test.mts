@@ -3,7 +3,8 @@
  * particular that addresses are re-drawn, so knowledge from round one is
  * worthless in round two.
  *
- * Run with a very short round:  npx partykit dev --var ROUND_MS=4000 --var SCAN_MS=800
+ * Ends round one by voting the hacker out rather than waiting for the clock,
+ * so the test does not depend on how the server was launched.
  */
 import type { ServerMessage, Task } from "../lib/protocol";
 
@@ -63,18 +64,23 @@ await settle();
 const roles1 = all.map((x) => x.of("role").at(-1) as Extract<ServerMessage, { type: "role" }>);
 check("round 1 started", a.snap()?.phase === "playing");
 
-// Burn a meeting and do some work so there is state to clear.
-b.send({ type: "callMeeting" });
-await settle();
-for (const x of all) x.send({ type: "vote", targetId: null });
-await settle(700);
+// Leave some state behind to be cleared: a spent meeting, and some work done.
 const t = a.tasks().find((x) => x.done < x.steps);
 if (t) a.send({ type: "work", taskId: t.id });
 await settle();
 
-// Let the short round expire.
-for (let i = 0; i < 40 && a.snap()?.phase !== "ended"; i++) await settle(300);
+// End round 1 deterministically by voting the hacker out, rather than waiting
+// on ROUND_MS — that would make this pass or fail on how the server was
+// launched instead of on restart behaviour.
+const hackerName = all.find(
+  (x) => (x.of("role").at(-1) as Extract<ServerMessage, { type: "role" }>)?.role === "hacker",
+)!.name;
+b.send({ type: "callMeeting" });
+await settle();
+for (const x of all) x.send({ type: "vote", targetId: hackerName });
+for (let i = 0; i < 20 && a.snap()?.phase !== "ended"; i++) await settle(300);
 check("round 1 ended", a.snap()?.phase === "ended", a.snap()?.phase);
+check("ended by catching the hacker", a.snap()?.result?.reason === "hacker_ejected");
 check("there is a result", a.snap()?.result != null);
 
 // A non-host cannot restart.

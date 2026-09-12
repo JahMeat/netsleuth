@@ -1,12 +1,36 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import Lobby from "@/components/Lobby";
 import { generateRoomCode, sanitizeRoomCode, ROOM_CODE_LENGTH } from "@/lib/roomCode";
 import { MAX_NAME_LENGTH, normalizeName } from "@/lib/protocol";
 import { markCreated, storeName } from "@/lib/session";
 
+/**
+ * The entire app is this one page.
+ *
+ * A room is `/?code=ABC123` rather than its own path. Two reasons: a dynamic
+ * path segment cannot be statically exported (room codes are random, so there
+ * is no list to prerender), and a static host maps extensionless paths
+ * inconsistently — `/room/` serves while `/room` 404s. Collapsing to one route
+ * means no pasted link can land on a page that does not exist.
+ */
 export default function Home() {
+  // useSearchParams needs a Suspense boundary to prerender.
+  return (
+    <Suspense fallback={null}>
+      <Entry />
+    </Suspense>
+  );
+}
+
+function Entry() {
+  const code = sanitizeRoomCode(useSearchParams().get("code") ?? "");
+  return code ? <Lobby code={code} /> : <Landing />;
+}
+
+function Landing() {
   const router = useRouter();
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
@@ -19,7 +43,7 @@ export default function Home() {
     if (!clean) return;
     storeName(clean);
     if (creating) markCreated(target);
-    router.push(`/room/${target}`);
+    router.push(`/?code=${target}`);
   }
 
   return (
@@ -29,8 +53,9 @@ export default function Home() {
         <span className="tag">// find the hacker</span>
       </div>
       <p className="subtitle">
-        One of you is injecting anomalies into the network. Everyone else is watching
-        the wire. Read the packets, flag the evidence, vote them out.
+        Everyone has an address and a list of tasks. Doing your work puts packets
+        on the wire; sitting still leaves a hole where your traffic should be. One
+        of you cannot do the work at all.
       </p>
 
       <div className="panel">
@@ -48,14 +73,12 @@ export default function Home() {
 
       <div className="panel">
         <h2>Open a lobby</h2>
-        <button
-          disabled={!validName}
-          onClick={() => enter(generateRoomCode(), true)}
-        >
+        <button disabled={!validName} onClick={() => enter(generateRoomCode(), true)}>
           Create lobby →
         </button>
         <p className="hint">
-          You become the host. The host&apos;s browser generates the packet feed.
+          You become the host, which means you can start the round and manage the
+          lobby.
         </p>
 
         <div className="divider">OR</div>

@@ -22,15 +22,21 @@ running out the clock, or by compromising analysts until only one is left.
 
 ## Architecture
 
+One PartyKit deployment serves everything: the static Next.js export *and* the
+room server, on a single origin.
+
 ```
-Next.js (Vercel)                 PartyKit room (one room == one lobby)
-┌─────────────────┐              ┌──────────────────────────────────┐
-│ analyst browsers│ ◀─filtered── │  authoritative room state        │
-│                 │ ──work────▶  │  players / roles / addresses     │
-│ hacker browser  │ ──hostile──▶ │  tasks / progress / votes        │
-└─────────────────┘              │  (in-memory, no database)        │
-                                 └──────────────────────────────────┘
+                    PartyKit (one deploy, one origin)
+┌─────────────────┐ ┌──────────────────────────────────────────────┐
+│ analyst browsers│ │  static Next export  (serve: out/)           │
+│ hacker browser  │◀│  room server         (party/main.ts)         │
+└─────────────────┘ │  state: players / roles / addresses / tasks  │
+                    │  in-memory, no database                      │
+                    └──────────────────────────────────────────────┘
 ```
+
+Because the page and the socket share an origin, the client reads the socket
+host straight off the page URL. **There is no environment variable to set.**
 
 Four rules carry the whole game, all enforced in `party/main.ts`:
 
@@ -99,16 +105,37 @@ npm install
 npm run dev
 ```
 
-Next on :3000, PartyKit on :1999. Open <http://localhost:3000>, create a lobby,
-then open the room URL in more tabs. Identity is per-tab, so four tabs are four
-players.
+Next on :3000 (with hot reload), PartyKit on :1999. Open
+<http://localhost:3000>; a page on localhost knows to dial :1999 for the socket,
+so this needs no configuration either.
+
+To check the real deployed shape — one origin, static assets served by PartyKit:
+
+```bash
+npm run preview
+```
+
+Then open <http://127.0.0.1:1999>. Create a lobby and open the URL in more tabs;
+identity is per-tab, so four tabs are four players.
+
+### One page, one route
+
+The whole app is `/`, and a room is `/?code=ABC123`. A dynamic path segment
+cannot be statically exported — room codes are random, so there is no list to
+prerender — and a static host maps extensionless paths inconsistently: `/room/`
+serves while `/room` 404s. Collapsing to one route means no pasted link can land
+on a page that does not exist.
 
 ## Checking it without a browser
 
 ```bash
-npm run test:feed   # print every packet shape, with hostile ones marked
-npm run test:game   # drive a full round over raw WebSocket
+npm run test:feed      # print every packet shape, with hostile ones marked
+npm run test:game      # drive a full round over raw WebSocket
+npm run test:restart   # two rounds back to back, checking nothing carries over
 ```
+
+Both socket tests need a room server running (`npm run dev:party`) and neither
+depends on how it was launched.
 
 `test:game` is the one that matters: it talks straight to the room server, so it
 cannot be fooled by UI that merely hides things. It asserts that no address ever
@@ -119,12 +146,18 @@ compromise is refused against an address the Hacker has not swept for.
 ## Deploying
 
 ```bash
-npx partykit login     # once
-npm run deploy:party   # -> netsleuth.<your-partykit-username>.partykit.dev
+npx partykit login   # once
+npm run deploy       # builds the static export, then ships both
 ```
 
-Then set `NEXT_PUBLIC_PARTYKIT_HOST` to that host in the Vercel project's
-environment variables and deploy the Next app. See `.env.example`.
+That is the whole deploy. It prints the URL —
+`netsleuth.<your-partykit-username>.partykit.dev` — and that single link is the
+game. No second host, no environment variables, nothing to keep in sync.
+
+Hosting the frontend elsewhere (Vercel, Netlify) still works: set
+`NEXT_PUBLIC_PARTYKIT_HOST` to the deployed room host and it overrides the
+same-origin default. See `.env.example`. Note that `NEXT_PUBLIC_*` is inlined at
+build time, so changing it needs a rebuild, not just a settings edit.
 
 ## Tuning
 
@@ -150,7 +183,8 @@ cooldowns, takeover duration, stall length, tasks per player, feed window.
 - [x] **7.** Flagging, round timer, vote + tally + results
 - [x] **8.** Redesign: packets mirror player activity; tasks as the win condition
 - [x] **9.** Players-only wire; private addresses; sweep and compromise
-- [ ] **10.** Multi-device playtest; tune task length, sweep cost, kill cooldown
+- [x] **10.** Host restart; single-origin hosting on PartyKit
+- [ ] **11.** Multi-device playtest; tune task length, sweep cost, kill cooldown
 
 ## Known rough edges
 
@@ -170,4 +204,7 @@ cooldowns, takeover duration, stall length, tasks per player, feed window.
   wrong for a moment.
 - A kick bars the player's tab id for the room's lifetime. Someone who clears
   sessionStorage gets a fresh id and can rejoin.
-- No rematch button yet — the `ended` phase is terminal until everyone leaves.
+- On Windows, `partykit dev` can leave an orphaned `workerd` child holding port
+  1999, so killing by port starts a second server that silently fails to bind and
+  leaves the stale one serving. Kill by command line instead:
+  `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "partykit|workerd" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`

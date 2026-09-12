@@ -1,5 +1,9 @@
 {
   "$schema": "https://www.partykit.io/schema.json",
   "name": "netsleuth",
-  "main": "party/main.ts"
+  "main": "party/main.ts",
+  "serve": {
+    "path": "out",
+    "singlePageApp": true
+  }
 }
