@@ -67,6 +67,9 @@ function ConnectedLobby({
     role,
     packets,
     tasks,
+    myIp,
+    known,
+    scanning,
     flags,
     takeoverUntil,
     error,
@@ -117,7 +120,7 @@ function ConnectedLobby({
   // other side: the Hacker is never *sent* the feed at all.
   if (room && room.phase !== "lobby") {
     const me = room.players.find((p) => p.id === youId);
-    const ejected = me?.ejected ?? false;
+    const out = me?.out ?? false;
 
     return (
       <GameShell room={room} youId={youId} onLeave={leave} send={send}>
@@ -130,8 +133,11 @@ function ConnectedLobby({
             <HackerScreen
               room={room}
               youId={youId}
+              myIp={myIp}
               tasks={tasks}
-              ejected={ejected}
+              known={known}
+              scanning={scanning}
+              out={out}
               error={error}
               send={send}
             />
@@ -139,16 +145,17 @@ function ConnectedLobby({
             <AnalystScreen
               room={room}
               youId={youId}
+              myIp={myIp}
               packets={packets}
               flags={flags}
               tasks={tasks}
-              ejected={ejected}
+              out={out}
               send={send}
             />
           ))}
 
         {room.phase === "meeting" && (
-          <Meeting room={room} youId={youId} role={role} send={send} />
+          <Meeting room={room} youId={youId} myIp={myIp} role={role} send={send} />
         )}
 
         {room.phase === "ended" && <Results room={room} />}
@@ -450,7 +457,7 @@ function GameShell({
             <ProgressBar done={room.progress.done} total={room.progress.total} />
           </div>
           <div className="barRight">
-            {me && !me.ejected && (
+            {me && !me.out && (
               <button
                 className="secondary"
                 disabled={!me.canCallMeeting}

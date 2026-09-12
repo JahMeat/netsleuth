@@ -1009,3 +1009,80 @@ input.wind {
   color: var(--text);
   opacity: 0.85;
 }
+
+/* --- recon and kill targets --- */
+
+.targetGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+button.targetChip {
+  font-size: 12px;
+  padding: 8px 13px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  letter-spacing: 0.03em;
+  text-transform: none;
+}
+
+button.targetChip:hover:not(:disabled) {
+  border-color: var(--accent-dim);
+  background: #1d2836;
+}
+
+button.targetChip.found {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+  opacity: 1;
+}
+
+button.targetChip.found:disabled {
+  opacity: 0.75;
+  cursor: default;
+}
+
+button.targetChip.kill {
+  border-color: rgba(255, 92, 114, 0.4);
+  color: var(--danger);
+}
+
+button.targetChip.kill:hover:not(:disabled) {
+  background: rgba(255, 92, 114, 0.12);
+  border-color: rgba(255, 92, 114, 0.6);
+}
+
+/* Second click commits. */
+button.targetChip.armed {
+  background: rgba(255, 92, 114, 0.2);
+  border-color: var(--danger);
+  font-weight: 600;
+}
+
+.ipTag.found {
+  color: var(--accent);
+}
+
+/* Your own traffic, so you can tell your trail from everyone else's. */
+.prow.own .c-src {
+  color: var(--accent);
+}
+
+.prow .c-who {
+  color: var(--accent);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+code {
+  color: var(--text);
+  background: var(--panel-2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.95em;
+}

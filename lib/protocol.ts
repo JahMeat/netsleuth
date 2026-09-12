@@ -14,33 +14,37 @@
  *     cannot claim work it did not do, and the Hacker's work never counts.
  */
 
-import type { AttackKind, Packet } from "./packets";
+import type { AnomalyKind, AttackKind, Packet } from "./packets";
 import type { Task, TaskKind } from "./tasks";
 
-export type { AttackKind, Packet, Task, TaskKind };
+export type { AnomalyKind, AttackKind, Packet, Task, TaskKind };
 
 export type Phase = "lobby" | "playing" | "meeting" | "ended";
 
 export type Role = "benign" | "hacker";
 
+export type OutReason = "voted" | "compromised";
+
 /**
- * A player as *everyone* sees them. No role here: this object is broadcast, and
- * a role on it would hand the Hacker away in devtools.
+ * A player as *everyone* sees them. This object is broadcast, so it carries no
+ * role — and, since the redesign, no address either.
  *
- * `ip` is public on purpose — correlating a quiet IP with a quiet player is the
- * whole detection game.
+ * Hiding the address is what makes the game work from both sides. The hacker
+ * has to hunt for a victim's IP instead of reading it off a list, and the
+ * analysts have to argue their way from "something hostile came from .24" to
+ * "who here is .24?". You learn your own address and nobody else's.
  */
 export interface Player {
   id: string;
   name: string;
   isHost: boolean;
-  ip: string;
-  ejected: boolean;
+  out: boolean;
+  outReason: OutReason | null;
   /** Whether they still hold their one meeting call. */
   canCallMeeting: boolean;
 }
 
-/** Shared task progress. Ejected players' unfinished work leaves the total. */
+/** Shared task progress. Work belonging to players who are out leaves the total. */
 export interface Progress {
   done: number;
   total: number;
@@ -52,7 +56,8 @@ export interface Evidence {
   byId: string;
   byName: string;
   hit: boolean;
-  kind: AttackKind | null;
+  /** What it really was: an attack, a scan, or a compromise. */
+  kind: AnomalyKind | null;
 }
 
 export interface Vote {
@@ -90,7 +95,7 @@ export interface RoomSnapshot {
   players: Player[];
   deadline: number | null;
   progress: Progress;
-  /** Gateway address, so clients render the LAN consistently. */
+  /** Gateway address. Not secret: it is the one host everybody talks to. */
   gatewayIp: string;
   /** Set while an attack is stalling task work. */
   stalledUntil: number | null;
@@ -108,21 +113,19 @@ export type ClientMessage =
   | { type: "kick"; playerId: string }
   | { type: "transferHost"; playerId: string }
   | { type: "startGame" }
-  /** Host only: ambient background traffic. Activity packets come from the server. */
-  | { type: "feed"; packets: RawFeedPacket[] }
   /** One unit of work on one of your own tasks. The server decides if it counts. */
   | { type: "work"; taskId: string }
   /** Hacker only. */
   | { type: "attack"; kind: AttackKind }
+  /** Hacker only: sweep for a named player's address. Loud, and slow to return. */
+  | { type: "scan"; playerId: string }
+  /** Hacker only: take out a player whose address you have already found. */
+  | { type: "compromise"; ip: string }
   /** Analysts only: mark a packet as suspicious. */
   | { type: "flag"; seq: number }
   /** Burn your one meeting call. */
   | { type: "callMeeting" }
   | { type: "vote"; targetId: string | null };
-
-export interface RawFeedPacket extends Packet {
-  anomaly: AttackKind | null;
-}
 
 export type ErrorCode =
   | "room_not_found"
@@ -138,7 +141,9 @@ export type ErrorCode =
   | "wrong_phase"
   | "no_meeting_left"
   | "stalled"
-  | "ejected";
+  | "out"
+  | "unknown_ip"
+  | "scanning";
 
 /** Server -> client. */
 export type ServerMessage =
@@ -152,8 +157,12 @@ export type ServerMessage =
   | { type: "tasks"; tasks: Task[] }
   /** Analysts only: new traffic. The Hacker never receives this. */
   | { type: "packets"; packets: Packet[] }
-  /** Host only: splice an attack into the ambient feed. Says nothing about who. */
-  | { type: "inject"; kind: AttackKind; victimLabel?: string }
+  /** Your own address. Sent to one connection only — nobody learns anyone else's. */
+  | { type: "whoami"; ip: string }
+  /** Hacker only: the result of a scan, once it finishes. */
+  | { type: "scanResult"; playerId: string; name: string; ip: string }
+  /** You were compromised. Terminal, like being voted out. */
+  | { type: "compromised" }
   | { type: "takeover"; untilMs: number }
   | { type: "flagAck"; seq: number; hit: boolean }
   | { type: "kicked"; byName: string }
@@ -169,6 +178,12 @@ export const TASKS_PER_PLAYER = 4;
 
 /** Hard ceiling on the round. Expiry with work outstanding is a Hacker win. */
 export const ROUND_MS = 300_000;
+/** How long an address sweep takes to come back. Long enough to be caught. */
+export const SCAN_MS = 6_000;
+/** Gap between compromises, so the hacker cannot clear the room at once. */
+export const COMPROMISE_COOLDOWN_MS = 35_000;
+/** Gap between scans. */
+export const SCAN_COOLDOWN_MS = 20_000;
 /** Discussion + voting window once someone calls a meeting. */
 export const MEETING_MS = 75_000;
 export const TAKEOVER_MS = 6_000;

@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import {
   ATTACK_LABELS,
   ATTACK_COOLDOWN_MS,
+  COMPROMISE_COOLDOWN_MS,
+  SCAN_COOLDOWN_MS,
   type AttackKind,
   type ClientMessage,
   type EndReason,
@@ -13,6 +15,7 @@ import {
   type RoomSnapshot,
   type Task,
 } from "@/lib/protocol";
+import type { KnownHost } from "@/lib/useRoom";
 import { TaskPanel } from "./Tasks";
 
 export function Countdown({ deadline }: { deadline: number | null }) {
@@ -35,7 +38,15 @@ export function Countdown({ deadline }: { deadline: number | null }) {
   );
 }
 
-/** The shared task bar. Everyone sees it, including the Hacker. */
+/** Ticks once a second so cooldown labels stay honest. */
+function useTick(ms = 250) {
+  const [, force] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => force((n) => n + 1), ms);
+    return () => clearInterval(id);
+  }, [ms]);
+}
+
 export function ProgressBar({ done, total }: { done: number; total: number }) {
   const pct = total === 0 ? 0 : Math.round((done / total) * 100);
   return (
@@ -48,38 +59,51 @@ export function ProgressBar({ done, total }: { done: number; total: number }) {
   );
 }
 
-/** Who is on the LAN, and at which address. The core detection aid. */
+/**
+ * Who is in the room — names only.
+ *
+ * Addresses are deliberately absent. You are shown your own and nobody else's,
+ * so pinning a packet on a person is an argument to be had out loud rather than
+ * a lookup anyone can do silently.
+ */
 function Roster({
   players,
   youId,
+  myIp,
   gatewayIp,
+  known,
 }: {
   players: Player[];
   youId: string | null;
+  myIp: string | null;
   gatewayIp: string;
+  /** Hacker only: addresses already swept, shown inline once found. */
+  known?: KnownHost[];
 }) {
   return (
     <div className="panel">
-      <h2>Hosts on this segment</h2>
+      <h2>In the room</h2>
       <ul className="playerList compact">
-        <li className="gatewayRow">
-          <span className="dot" />
-          <span className="pname">gateway</span>
-          <span className="ipTag">{gatewayIp}</span>
-        </li>
-        {players.map((p) => (
-          <li key={p.id} className={p.id === youId ? "you" : p.ejected ? "gone" : undefined}>
-            <span className="dot" />
-            <span className="pname">{p.name}</span>
-            {p.id === youId && <span className="badge">you</span>}
-            {p.ejected && <span className="badge">ejected</span>}
-            <span className="ipTag">{p.ip}</span>
-          </li>
-        ))}
+        {players.map((p) => {
+          const found = known?.find((k) => k.playerId === p.id);
+          return (
+            <li
+              key={p.id}
+              className={p.id === youId ? "you" : p.out ? "gone" : undefined}
+            >
+              <span className="dot" />
+              <span className="pname">{p.name}</span>
+              {p.id === youId && <span className="badge">you</span>}
+              {p.out && <span className="badge">{p.outReason}</span>}
+              {p.id === youId && myIp && <span className="ipTag">{myIp}</span>}
+              {found && p.id !== youId && <span className="ipTag found">{found.ip}</span>}
+            </li>
+          );
+        })}
       </ul>
       <p className="hint">
-        Every packet carries the address of whoever caused it. Match the quiet
-        address to the quiet player.
+        Gateway is <code>{gatewayIp}</code>. You only know your own address —
+        everyone else&apos;s has to be argued out from what the wire shows.
       </p>
     </div>
   );
@@ -88,15 +112,13 @@ function Roster({
 function FeedTable({
   packets,
   flags,
-  players,
-  youId,
+  myIp,
   canFlag,
   send,
 }: {
   packets: Packet[];
   flags: Map<number, boolean>;
-  players: Player[];
-  youId: string | null;
+  myIp: string | null;
   canFlag: boolean;
   send: (m: ClientMessage) => void;
 }) {
@@ -109,15 +131,11 @@ function FeedTable({
     el.scrollTop = el.scrollHeight;
   }, [packets, follow]);
 
-  // Resolve an address back to a person, so the feed reads socially rather than
-  // numerically. This is the whole shift from the Wireshark version.
-  const byIp = new Map(players.map((p) => [p.ip, p]));
-
   return (
     <>
       <div className="feedHead">
         <span className="c-seq">#</span>
-        <span className="c-who">who</span>
+        <span className="c-who">mine</span>
         <span className="c-src">source</span>
         <span className="c-dst">destination</span>
         <span className="c-proto">proto</span>
@@ -137,21 +155,19 @@ function FeedTable({
       >
         {packets.length === 0 ? (
           <p className="subtitle" style={{ padding: 16 }}>
-            Quiet on the wire&hellip;
+            Nothing on the wire. Nobody has done anything yet.
           </p>
         ) : (
           packets.map((p) => {
             const flagged = flags.get(p.seq);
-            const who = byIp.get(p.src);
+            const mine = myIp !== null && p.src === myIp;
             return (
               <div
                 key={p.seq}
-                className={`prow ${flagged === true ? "hit" : flagged === false ? "miss" : ""}`}
+                className={`prow ${flagged === true ? "hit" : flagged === false ? "miss" : ""} ${mine ? "own" : ""}`}
               >
                 <span className="c-seq">{p.seq}</span>
-                <span className={`c-who ${who ? "known" : ""}`}>
-                  {who ? (who.id === youId ? `${who.name} (you)` : who.name) : "—"}
-                </span>
+                <span className="c-who">{mine ? "you" : ""}</span>
                 <span className="c-src">{p.src}</span>
                 <span className="c-dst">{p.dst}</span>
                 <span className="c-proto">{p.proto}</span>
@@ -198,25 +214,27 @@ function FeedTable({
 /**
  * The Analyst screen: tasks on one side, the wire on the other.
  *
- * The tension is the layout. Heads-down on your tasks moves the bar but blinds
- * you; watching the feed catches the hacker but leaves your own address silent,
- * which is exactly what a hacker looks like.
+ * Heads-down on your tasks moves the bar but blinds you; watching the wire
+ * catches the hacker but leaves your own address silent, which is exactly what
+ * a hacker looks like.
  */
 export function AnalystScreen({
   room,
   youId,
+  myIp,
   packets,
   flags,
   tasks,
-  ejected,
+  out,
   send,
 }: {
   room: RoomSnapshot;
   youId: string | null;
+  myIp: string | null;
   packets: Packet[];
   flags: Map<number, boolean>;
   tasks: Task[];
-  ejected: boolean;
+  out: boolean;
   send: (m: ClientMessage) => void;
 }) {
   const stalled = room.stalledUntil !== null && room.stalledUntil > Date.now();
@@ -224,12 +242,11 @@ export function AnalystScreen({
   return (
     <div className="gameGrid">
       <div className="gameLeft">
-        {ejected ? (
+        {out ? (
           <div className="panel">
-            <h2>Ejected</h2>
+            <h2>Out</h2>
             <p className="subtitle" style={{ margin: 0 }}>
-              You are out. You can still read the wire, but you cannot work,
-              flag, or vote.
+              You can still read the wire, but you cannot work, flag, or vote.
             </p>
           </div>
         ) : (
@@ -239,16 +256,20 @@ export function AnalystScreen({
             onWork={(taskId) => send({ type: "work", taskId })}
           />
         )}
-        <Roster players={room.players} youId={youId} gatewayIp={room.gatewayIp} />
+        <Roster
+          players={room.players}
+          youId={youId}
+          myIp={myIp}
+          gatewayIp={room.gatewayIp}
+        />
       </div>
 
       <div className="gameRight">
         <FeedTable
           packets={packets}
           flags={flags}
-          players={room.players}
-          youId={youId}
-          canFlag={!ejected}
+          myIp={myIp}
+          canFlag={!out}
           send={send}
         />
       </div>
@@ -258,41 +279,56 @@ export function AnalystScreen({
 
 /**
  * The Hacker screen. Same task panel as everyone else — theirs advances and
- * completes, it simply never reaches the shared bar — plus the three attacks.
- * What is absent is the feed: the server never sends it to this connection.
+ * completes, it simply never reaches the shared bar — plus recon and the kill.
+ *
+ * What is absent is the feed: the server never sends it to this connection, so
+ * the hacker cannot see the trail they are leaving.
  */
 export function HackerScreen({
   room,
   youId,
+  myIp,
   tasks,
-  ejected,
+  known,
+  scanning,
+  out,
   error,
   send,
 }: {
   room: RoomSnapshot;
   youId: string | null;
+  myIp: string | null;
   tasks: Task[];
-  ejected: boolean;
+  known: KnownHost[];
+  scanning: boolean;
+  out: boolean;
   error: { code: string; message: string } | null;
   send: (m: ClientMessage) => void;
 }) {
+  useTick();
   const [firedAt, setFiredAt] = useState<Partial<Record<AttackKind, number>>>({});
-  const [, force] = useState(0);
-
-  useEffect(() => {
-    const id = setInterval(() => force((n) => n + 1), 250);
-    return () => clearInterval(id);
-  }, []);
+  const [scannedAt, setScannedAt] = useState(0);
+  const [killedAt, setKilledAt] = useState(0);
+  const [armed, setArmed] = useState<string | null>(null);
 
   const now = Date.now();
   const stalled = room.stalledUntil !== null && room.stalledUntil > Date.now();
+  const scanLeft = Math.ceil((SCAN_COOLDOWN_MS - (now - scannedAt)) / 1000);
+  const killLeft = Math.ceil((COMPROMISE_COOLDOWN_MS - (now - killedAt)) / 1000);
+  const scanCooling = now - scannedAt < SCAN_COOLDOWN_MS;
+  const killCooling = now - killedAt < COMPROMISE_COOLDOWN_MS;
+
+  const targets = room.players.filter((p) => !p.out && p.id !== youId);
+  const liveKnown = known.filter((k) =>
+    room.players.some((p) => p.id === k.playerId && !p.out),
+  );
 
   return (
     <div className="gameGrid">
       <div className="gameLeft">
-        {ejected ? (
+        {out ? (
           <div className="panel">
-            <h2>Ejected</h2>
+            <h2>Out</h2>
             <p className="subtitle" style={{ margin: 0 }}>
               They got you. Watch it play out.
             </p>
@@ -305,19 +341,98 @@ export function HackerScreen({
           />
         )}
         <div className="panel">
-          <h2>Cover</h2>
+          <h2>Your cover</h2>
           <p className="hint" style={{ marginTop: 0 }}>
-            Your tasks look exactly like theirs on the wire, and they complete on
-            your screen — they just never move the shared bar. Working is how you
-            stop being the quiet address.
+            Your address is <code>{myIp ?? "…"}</code>, and{" "}
+            <strong>everything you do comes from it</strong> — fake work, sweeps,
+            attacks, kills alike. There is no background traffic to hide in, so
+            doing tasks is the only thing that makes you look like everyone else.
           </p>
         </div>
+        <Roster
+          players={room.players}
+          youId={youId}
+          myIp={myIp}
+          gatewayIp={room.gatewayIp}
+          known={known}
+        />
       </div>
 
       <div className="gameRight">
-        {error && error.code === "on_cooldown" && (
-          <div className="error">{error.message}</div>
-        )}
+        {error &&
+          (error.code === "on_cooldown" ||
+            error.code === "unknown_ip" ||
+            error.code === "scanning") && <div className="error">{error.message}</div>}
+
+        <div className="panel">
+          <h2>Sweep for an address</h2>
+          <p className="hint" style={{ marginTop: 0 }}>
+            You cannot compromise someone until you know where they are. A sweep
+            is slow and unmistakable on the wire — they will see it happen, they
+            just will not know it was you.
+          </p>
+          <div className="targetGrid">
+            {targets.map((p) => {
+              const found = known.find((k) => k.playerId === p.id);
+              return (
+                <button
+                  key={p.id}
+                  className={`targetChip ${found ? "found" : ""}`}
+                  disabled={out || scanning || scanCooling || Boolean(found)}
+                  onClick={() => {
+                    send({ type: "scan", playerId: p.id });
+                    setScannedAt(Date.now());
+                  }}
+                >
+                  {p.name}
+                  {found ? ` · ${found.ip}` : ""}
+                </button>
+              );
+            })}
+          </div>
+          <p className="hint">
+            {scanning
+              ? "Sweep running…"
+              : scanCooling
+                ? `Sweep recharging ${scanLeft}s`
+                : "Ready."}
+          </p>
+        </div>
+
+        <div className="panel">
+          <h2>Compromise</h2>
+          {liveKnown.length === 0 ? (
+            <p className="subtitle" style={{ margin: 0 }}>
+              No addresses found yet. Sweep for one first.
+            </p>
+          ) : (
+            <div className="targetGrid">
+              {liveKnown.map((k) => (
+                <button
+                  key={k.ip}
+                  className={`targetChip kill ${armed === k.ip ? "armed" : ""}`}
+                  disabled={out || killCooling}
+                  onClick={() => {
+                    if (armed === k.ip) {
+                      send({ type: "compromise", ip: k.ip });
+                      setKilledAt(Date.now());
+                      setArmed(null);
+                    } else {
+                      setArmed(k.ip);
+                    }
+                  }}
+                  onBlur={() => armed === k.ip && setArmed(null)}
+                >
+                  {armed === k.ip ? `confirm — take ${k.name}` : `${k.name} · ${k.ip}`}
+                </button>
+              ))}
+            </div>
+          )}
+          <p className="hint">
+            {killCooling ? `Too hot — wait ${killLeft}s` : "Ready."} A compromised
+            account is out of the round for good.
+          </p>
+        </div>
 
         <div className="attackGrid">
           {(Object.keys(ATTACK_LABELS) as AttackKind[]).map((kind) => {
@@ -328,7 +443,7 @@ export function HackerScreen({
               <button
                 key={kind}
                 className="attackCard"
-                disabled={cooling || ejected}
+                disabled={cooling || out}
                 onClick={() => {
                   send({ type: "attack", kind });
                   setFiredAt((f) => ({ ...f, [kind]: Date.now() }));
@@ -349,12 +464,10 @@ export function HackerScreen({
           <h2>The bar is your clock</h2>
           <ProgressBar done={room.progress.done} total={room.progress.total} />
           <p className="hint">
-            If that reaches 100% they win. Disruption is the only thing that
-            actually slows it — the others just make noise you can be caught for.
+            If that reaches 100% they win. Taking analysts out shrinks it — their
+            unfinished work leaves the total — and gets you to a room you control.
           </p>
         </div>
-
-        <Roster players={room.players} youId={youId} gatewayIp={room.gatewayIp} />
       </div>
     </div>
   );
@@ -386,19 +499,21 @@ export function TakeoverOverlay({ until }: { until: number }) {
 export function Meeting({
   room,
   youId,
+  myIp,
   role,
   send,
 }: {
   room: RoomSnapshot;
   youId: string | null;
+  myIp: string | null;
   role: Role | null;
   send: (m: ClientMessage) => void;
 }) {
   const me = room.players.find((p) => p.id === youId);
-  const spectating = me?.ejected ?? false;
+  const spectating = me?.out ?? false;
   const myVote = room.votes.find((v) => v.voterId === youId);
   const voted = myVote !== undefined;
-  const inPlay = room.players.filter((p) => !p.ejected);
+  const inPlay = room.players.filter((p) => !p.out);
 
   const countFor = (id: string | null) =>
     room.votes.filter((v) => v.targetId === id).length;
@@ -409,10 +524,10 @@ export function Meeting({
         <div>
           <span className="roleTag meeting">Meeting</span>
           <span className="barHint">
-            {room.meetingCalledBy
-              ? `Called by ${room.meetingCalledBy}.`
-              : "Compare evidence."}{" "}
-            {role === "hacker" ? "Say something reasonable." : "Who went quiet?"}
+            {room.meetingCalledBy ? `Called by ${room.meetingCalledBy}.` : ""}{" "}
+            {role === "hacker"
+              ? "Someone will ask whose address that was."
+              : "Whose address was doing that?"}
           </span>
         </div>
         <div className="barRight">
@@ -423,6 +538,15 @@ export function Meeting({
         </div>
       </div>
 
+      {myIp && (
+        <div className="panel" style={{ paddingTop: 14, paddingBottom: 14 }}>
+          <p className="hint" style={{ margin: 0 }}>
+            Your address is <code>{myIp}</code>. Nobody else can see that — claim
+            it or don&apos;t.
+          </p>
+        </div>
+      )}
+
       <div className="panel">
         <h2>Evidence ({room.evidence.length})</h2>
         {room.evidence.length === 0 ? (
@@ -432,7 +556,10 @@ export function Meeting({
         ) : (
           <div className="evidence">
             {room.evidence.map((e, i) => (
-              <div key={`${e.seq}-${e.byId}-${i}`} className={`erow ${e.hit ? "hit" : "miss"}`}>
+              <div
+                key={`${e.seq}-${e.byId}-${i}`}
+                className={`erow ${e.hit ? "hit" : "miss"}`}
+              >
                 <span className="ebadge">{e.hit ? e.kind : "clean"}</span>
                 <span className="eby">{e.byName}</span>
                 <span className="einfo">
@@ -457,7 +584,6 @@ export function Meeting({
               <li key={p.id} className={mine ? "you" : undefined}>
                 <span className="dot" />
                 <span className="pname">{p.name}</span>
-                <span className="ipTag">{p.ip}</span>
                 {n > 0 && (
                   <span className="badge">
                     {n} vote{n === 1 ? "" : "s"}
@@ -477,7 +603,7 @@ export function Meeting({
         <div className="lobbyFoot" style={{ marginTop: 14 }}>
           <span className="hint" style={{ margin: 0 }}>
             {spectating
-              ? "Spectators do not vote."
+              ? "You are out. No vote."
               : voted
                 ? "Vote locked in."
                 : "One vote each. A tie ejects nobody."}
@@ -507,6 +633,8 @@ export function Results({ room }: { room: RoomSnapshot }) {
   const r = room.result;
   if (!r) return null;
 
+  const compromised = room.players.filter((p) => p.outReason === "compromised");
+
   return (
     <>
       <div className={`verdict ${r.benignWin ? "win" : "lose"}`}>
@@ -522,7 +650,11 @@ export function Results({ room }: { room: RoomSnapshot }) {
       <div className="panel">
         <h2>Round</h2>
         <p className="hint" style={{ marginTop: 0 }}>
-          {r.attacksLaunched} attack{r.attacksLaunched === 1 ? "" : "s"} launched.
+          {r.attacksLaunched} attack{r.attacksLaunched === 1 ? "" : "s"} launched
+          {compromised.length > 0
+            ? ` · ${compromised.map((p) => p.name).join(", ")} compromised`
+            : " · nobody compromised"}
+          .
         </p>
         <ul className="playerList">
           {r.hits.map((h) => (

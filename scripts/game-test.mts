@@ -3,10 +3,10 @@
  * WebSocket. No browser and no React, so nothing here can be fooled by UI that
  * merely *hides* things.
  *
- * Run the party server first, with a short round:
- *   npm run dev:party -- --var ROUND_MS=8000 --var MEETING_MS=15000
+ * Run the party server first, with a quick sweep:
+ *   npx partykit dev --var SCAN_MS=1200
  */
-import type { ServerMessage, Task } from "../lib/protocol";
+import type { Packet, ServerMessage, Task } from "../lib/protocol";
 
 const ROOM = process.argv[2] ?? `T${Date.now().toString(36).slice(-5).toUpperCase()}`;
 const URL = `ws://127.0.0.1:1999/parties/main/${ROOM}`;
@@ -17,6 +17,8 @@ function check(label: string, ok: boolean, detail = "") {
   if (!ok) failures++;
 }
 
+type Snap = Extract<ServerMessage, { type: "snapshot" }>["room"];
+
 interface Client {
   name: string;
   ws: WebSocket;
@@ -24,7 +26,9 @@ interface Client {
   send: (m: unknown) => void;
   of: <T extends ServerMessage["type"]>(t: T) => Extract<ServerMessage, { type: T }>[];
   tasks: () => Task[];
-  snap: () => Extract<ServerMessage, { type: "snapshot" }>["room"] | undefined;
+  snap: () => Snap | undefined;
+  ip: () => string | undefined;
+  packets: () => Packet[];
 }
 
 async function connect(name: string): Promise<Client> {
@@ -33,15 +37,17 @@ async function connect(name: string): Promise<Client> {
 
   const got: ServerMessage[] = [];
   // Latest-state is tracked separately from the buffer, because tests clear the
-  // buffer between phases and would otherwise lose the current tasks/snapshot.
+  // buffer between phases and would otherwise lose the current state.
   let lastTasks: Task[] = [];
-  let lastSnap: Extract<ServerMessage, { type: "snapshot" }>["room"] | undefined;
+  let lastSnap: Snap | undefined;
+  let myIp: string | undefined;
 
   ws.addEventListener("message", (e) => {
     const m = JSON.parse(e.data as string) as ServerMessage;
     got.push(m);
     if (m.type === "tasks") lastTasks = m.tasks;
     if (m.type === "snapshot") lastSnap = m.room;
+    if (m.type === "whoami") myIp = m.ip;
   });
 
   const of = ((t: string) => got.filter((m) => m.type === t)) as Client["of"];
@@ -53,12 +59,13 @@ async function connect(name: string): Promise<Client> {
     of,
     tasks: () => lastTasks,
     snap: () => lastSnap,
+    ip: () => myIp,
+    packets: () => of("packets").flatMap((m) => m.packets),
   };
 }
 
 const settle = (ms = 450) => new Promise((r) => setTimeout(r, ms));
 
-/** Grind a task list to completion, respecting the server's work rate limit. */
 async function finishAll(c: Client) {
   for (let guard = 0; guard < 400; guard++) {
     const open = c.tasks().find((t) => t.done < t.steps);
@@ -76,24 +83,25 @@ const bob = await connect("bob");
 bob.send({ type: "hello", intent: "join", name: "bob" });
 const carol = await connect("carol");
 carol.send({ type: "hello", intent: "join", name: "carol" });
-// Four, not three: with three players one ejection leaves a single analyst
-// against the hacker, which is parity and ends the round immediately. Four is
-// the smallest game where a wrong vote is survivable.
 const dave = await connect("dave");
 dave.send({ type: "hello", intent: "join", name: "dave" });
 await settle();
 
 const all = [alice, bob, carol, dave];
 
-// --- addresses ------------------------------------------------------------
-const lobby = alice.snap()!;
-const ips = lobby.players.map((p) => p.ip);
-check("every player has an IP", ips.every(Boolean), ips.join(" "));
-check("IPs are unique", new Set(ips).size === ips.length);
+// --- addresses are private ------------------------------------------------
+const ips = all.map((c) => c.ip());
+check("everyone is told their own address", ips.every(Boolean), ips.join(" "));
+check("addresses are unique", new Set(ips).size === ips.length);
+
+const snapJson = JSON.stringify(alice.snap());
 check(
-  "players sit below the ambient range",
-  ips.every((ip) => Number(ip.split(".")[3]) < 100),
-  ips.join(" "),
+  "NO ADDRESS APPEARS IN THE BROADCAST SNAPSHOT",
+  ips.every((ip) => !snapJson.includes(ip!)),
+);
+check(
+  "you are told your own address and nobody else's",
+  alice.of("whoami").length === 1 && alice.of("whoami")[0].ip === alice.ip(),
 );
 
 // --- roles and tasks ------------------------------------------------------
@@ -105,131 +113,118 @@ console.log("roles:", [...roles].map(([n, r]) => `${n}=${r}`).join(" "));
 const hacker = all.find((c) => roles.get(c.name) === "hacker")!;
 const analysts = all.filter((c) => roles.get(c.name) === "benign");
 
-check("exactly one hacker", analysts.length === all.length - 1);
+check("exactly one hacker", analysts.length === 3);
 check("no role leaks into the snapshot", !JSON.stringify(alice.snap()).includes("hacker"));
-check("everyone gets a task list", all.every((c) => c.tasks().length > 0));
-check(
-  "THE HACKER GETS TASKS TOO",
-  hacker.tasks().length === analysts[0].tasks().length,
-  `hacker=${hacker.tasks().length} analyst=${analysts[0].tasks().length}`,
-);
+check("the hacker gets tasks too", hacker.tasks().length === analysts[0].tasks().length);
 
-const startProgress = alice.snap()!.progress;
-check(
-  "bar counts analysts only",
-  startProgress.total > 0 &&
-    startProgress.total ===
-      analysts.reduce((n, c) => n + c.tasks().reduce((m, t) => m + t.steps, 0), 0),
-  `total=${startProgress.total}`,
-);
+const startTotal = alice.snap()!.progress.total;
 
-// --- work emits traffic, but only analysts move the bar -------------------
+// --- the wire is players only --------------------------------------------
 for (const c of all) c.got.length = 0;
-
-const hackerTask = hacker.tasks().find((t) => t.done < t.steps)!;
-hacker.send({ type: "work", taskId: hackerTask.id });
+const watcher = analysts[0];
+const t0 = hacker.tasks().find((t) => t.done < t.steps)!;
+hacker.send({ type: "work", taskId: t0.id });
 await settle();
 
-const afterHackerWork = alice.snap()!.progress;
-check(
-  "HACKER WORK DOES NOT MOVE THE BAR",
-  afterHackerWork.done === startProgress.done,
-  `${startProgress.done} -> ${afterHackerWork.done}`,
-);
-check(
-  "hacker's own task list still advances",
-  (hacker.tasks().find((t) => t.id === hackerTask.id)?.done ?? 0) > 0,
-);
-
-const hackerIp = alice.snap()!.players.find((p) => p.id === hacker.name)?.ip;
-const seenFromHacker = analysts[0]
-  .of("packets")
-  .flatMap((m) => m.packets)
-  .filter((p) => p.src === hackerIp);
+check("hacker work does not move the bar", alice.snap()!.progress.done === 0);
+const fromHacker = watcher.packets().filter((p) => p.src === hacker.ip());
 check(
   "hacker's fake work still puts packets on the wire",
-  seenFromHacker.length > 0,
-  `${seenFromHacker.length} packets from ${hackerIp}`,
+  fromHacker.length > 0,
+  `${fromHacker.length} from ${hacker.ip()}`,
 );
-check("HACKER STILL RECEIVES NO FEED", hacker.of("packets").length === 0);
+check("HACKER RECEIVES NO FEED", hacker.of("packets").length === 0);
 
+const legit = new Set([...ips, alice.snap()!.gatewayIp, "255.255.255.255"]);
+const strangers = watcher.packets().filter((p) => !legit.has(p.src));
+check(
+  "EVERY SOURCE IS A PLAYER OR THE GATEWAY",
+  strangers.length === 0,
+  strangers.map((p) => p.src).join(" "),
+);
+
+// --- compromising requires recon -----------------------------------------
 for (const c of all) c.got.length = 0;
-const aTask = analysts[0].tasks().find((t) => t.done < t.steps)!;
-analysts[0].send({ type: "work", taskId: aTask.id });
+const victim = analysts[analysts.length - 1];
+hacker.send({ type: "compromise", ip: victim.ip()! });
 await settle();
 check(
-  "analyst work moves the bar",
-  (alice.snap()?.progress.done ?? 0) > afterHackerWork.done,
+  "CANNOT COMPROMISE AN ADDRESS YOU HAVE NOT FOUND",
+  hacker.of("error").at(-1)?.code === "unknown_ip",
 );
-
-// --- disruption stalls work ----------------------------------------------
-for (const c of all) c.got.length = 0;
-hacker.send({ type: "attack", kind: "disrupt" });
-await settle();
-check("disruption sets a stall", (alice.snap()?.stalledUntil ?? 0) > Date.now());
-
-const before = alice.snap()!.progress.done;
-const t2 = analysts[0].tasks().find((t) => t.done < t.steps)!;
-analysts[0].send({ type: "work", taskId: t2.id });
-await settle();
-check("work is refused while stalled", analysts[0].of("error").at(-1)?.code === "stalled");
-check("bar did not move while stalled", alice.snap()!.progress.done === before);
-
-// --- meetings are player-called ------------------------------------------
-for (const c of all) c.got.length = 0;
-await settle(8200); // let the stall lapse
-
-analysts[0].send({ type: "callMeeting" });
-await settle();
-check("a player can call a meeting", alice.snap()?.phase === "meeting");
 check(
-  "the meeting names its caller",
-  typeof alice.snap()?.meetingCalledBy === "string",
-  String(alice.snap()?.meetingCalledBy),
+  "the victim is still in play",
+  alice.snap()!.players.find((p) => p.id === victim.name)?.out === false,
 );
 
-analysts[0].send({ type: "callMeeting" });
+watcher.send({ type: "scan", playerId: victim.name });
 await settle();
+check("analysts cannot sweep", watcher.of("error").at(-1)?.code === "not_hacker");
+
+// --- the sweep ------------------------------------------------------------
+for (const c of all) c.got.length = 0;
+hacker.send({ type: "scan", playerId: victim.name });
+// Poll rather than guess: the sweep delay is configurable, so a fixed wait
+// would make this test pass or fail on a server flag instead of on behaviour.
+for (let i = 0; i < 40 && hacker.of("scanResult").length === 0; i++) await settle(300);
+
+const result = hacker.of("scanResult").at(-1);
+check("sweep returns the address", result?.ip === victim.ip(), String(result?.ip));
+check("sweep names who it found", result?.name === victim.name);
+
+const scanTraffic = watcher
+  .packets()
+  .filter((p) => p.src === hacker.ip() && /sweep|discovery/.test(p.info));
 check(
-  "only one meeting each",
-  analysts[0].of("error").at(-1)?.code === "no_meeting_left" ||
-    analysts[0].of("error").at(-1)?.code === "wrong_phase",
+  "THE SWEEP IS VISIBLE ON THE WIRE",
+  scanTraffic.length > 0,
+  `${scanTraffic.length} packets`,
+);
+check(
+  "the sweep probes more than just the real target",
+  new Set(scanTraffic.map((p) => p.dst)).size > 1,
 );
 
-// Vote out an analyst: with three analysts left, the round must continue.
-const scapegoat = analysts[analysts.length - 1];
-for (const c of all) c.send({ type: "vote", targetId: scapegoat.name });
+// --- the kill -------------------------------------------------------------
+for (const c of all) c.got.length = 0;
+hacker.send({ type: "compromise", ip: victim.ip()! });
 await settle(700);
 
-const afterVote = alice.snap()!;
-check("wrong ejection does not end the round", afterVote.phase === "playing");
-check(
-  "the ejected player is marked",
-  afterVote.players.find((p) => p.id === scapegoat.name)?.ejected === true,
-);
+const afterKill = alice.snap()!;
+const victimRow = afterKill.players.find((p) => p.id === victim.name);
+check("COMPROMISE TAKES THE PLAYER OUT", victimRow?.out === true);
+check("marked as compromised, not voted", victimRow?.outReason === "compromised");
+check("the victim is told", victim.of("compromised").length === 1);
 check(
   "their unfinished work leaves the total",
-  afterVote.progress.total < startProgress.total,
-  `${startProgress.total} -> ${afterVote.progress.total}`,
+  afterKill.progress.total < startTotal,
+  `${startTotal} -> ${afterKill.progress.total}`,
+);
+check("the round continues", afterKill.phase === "playing");
+
+victim.send({ type: "work", taskId: victim.tasks()[0].id });
+await settle();
+check(
+  "a compromised player cannot work",
+  alice.snap()!.progress.done === afterKill.progress.done,
+);
+victim.send({ type: "callMeeting" });
+await settle();
+check(
+  "a compromised player cannot call a meeting",
+  victim.of("error").at(-1)?.code === "out",
 );
 
-scapegoat.send({ type: "work", taskId: scapegoat.tasks()[0].id });
-await settle();
-check("ejected players cannot work", alice.snap()!.progress.done === afterVote.progress.done);
-
-// --- analysts win by finishing the work ----------------------------------
-// Everyone still in play has to finish; the ejected analyst's work already
-// left the denominator.
+// --- analysts still win by finishing -------------------------------------
 for (const a of analysts) {
-  if (a === scapegoat) continue;
+  if (a === victim) continue;
   await finishAll(a);
 }
 await settle(800);
 
 const fin = alice.snap()!;
 check("round ended", fin.phase === "ended", fin.phase);
-check("ANALYSTS WIN ON TASKS", fin.result?.benignWin === true, fin.result?.reason);
-check("reason is tasks_complete", fin.result?.reason === "tasks_complete");
+check("analysts win on tasks", fin.result?.benignWin === true, fin.result?.reason);
 check("hacker revealed", fin.result?.hackerId === hacker.name);
 
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}\n`);

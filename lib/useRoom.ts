@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import usePartySocket from "partysocket/react";
 import { PARTYKIT_HOST } from "./partyHost";
 import { getTabId } from "./session";
-import { createFeed, createNetwork, type Feed } from "./packets";
+
 import {
   FEED_WINDOW,
   type ClientMessage,
@@ -18,8 +18,12 @@ import {
 
 export type ConnectionStatus = "idle" | "connecting" | "connected" | "closed";
 
-/** How often the host's browser produces a tick of traffic. */
-const TICK_MS = 900;
+/** A player the hacker has swept for and can now act against. */
+export interface KnownHost {
+  playerId: string;
+  name: string;
+  ip: string;
+}
 
 export interface UseRoomResult {
   status: ConnectionStatus;
@@ -31,6 +35,12 @@ export interface UseRoomResult {
   packets: Packet[];
   /** Your own task list. Everyone gets one, including the Hacker. */
   tasks: Task[];
+  /** Your own address. You never learn anyone else's from the server. */
+  myIp: string | null;
+  /** Hacker only: addresses found by sweeping. */
+  known: KnownHost[];
+  /** Hacker only: true while a sweep is in flight. */
+  scanning: boolean;
   /** Sequence numbers you flagged, mapped to whether they were real. */
   flags: Map<number, boolean>;
   /** Epoch ms until which your screen is seized, or null. */
@@ -57,6 +67,9 @@ export function useRoom(options: {
   const [role, setRole] = useState<Role | null>(null);
   const [packets, setPackets] = useState<Packet[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [myIp, setMyIp] = useState<string | null>(null);
+  const [known, setKnown] = useState<KnownHost[]>([]);
+  const [scanning, setScanning] = useState(false);
   const [flags, setFlags] = useState<Map<number, boolean>>(new Map());
   const [takeoverUntil, setTakeoverUntil] = useState<number | null>(null);
   const [error, setError] = useState<UseRoomResult["error"]>(null);
@@ -67,13 +80,6 @@ export function useRoom(options: {
 
   const helloRef = useRef({ name, intent });
   helloRef.current = { name, intent };
-
-  /**
-   * The host's traffic generator. Held in a ref because it is long-lived,
-   * stateful, and must survive re-renders without being rebuilt — rebuilding it
-   * would reset sequence numbers mid-round and make the feed obviously fake.
-   */
-  const feedRef = useRef<Feed | null>(null);
 
   const socket = usePartySocket({
     host: PARTYKIT_HOST,
@@ -109,6 +115,20 @@ export function useRoom(options: {
         case "tasks":
           setTasks(msg.tasks);
           break;
+        case "whoami":
+          setMyIp(msg.ip);
+          break;
+        case "scanResult":
+          setScanning(false);
+          setKnown((cur) =>
+            cur.some((k) => k.ip === msg.ip)
+              ? cur
+              : [...cur, { playerId: msg.playerId, name: msg.name, ip: msg.ip }],
+          );
+          break;
+        case "compromised":
+          // Nothing to set: the snapshot marks you out, and that drives the UI.
+          break;
         case "packets":
           // Bounded window: a long round would otherwise grow this forever and
           // drag the render down with it.
@@ -116,9 +136,6 @@ export function useRoom(options: {
             const next = cur.concat(msg.packets);
             return next.length > FEED_WINDOW ? next.slice(-FEED_WINDOW) : next;
           });
-          break;
-        case "inject":
-          feedRef.current?.inject(msg.kind, msg.victimLabel);
           break;
         case "takeover":
           setTakeoverUntil(msg.untilMs);
@@ -130,6 +147,8 @@ export function useRoom(options: {
           setKickedBy(msg.byName);
           break;
         case "error":
+          // A refused sweep never started, so clear the pending state.
+          if (msg.code === "on_cooldown" || msg.code === "scanning") setScanning(false);
           setError({ code: msg.code, message: msg.message });
           break;
       }
@@ -145,45 +164,22 @@ export function useRoom(options: {
   }, [tabId, status]);
 
   const send = useCallback(
-    (msg: ClientMessage) => socket.send(JSON.stringify(msg)),
+    (msg: ClientMessage) => {
+      if (typeof msg === "object" && msg.type === "scan") setScanning(true);
+      socket.send(JSON.stringify(msg));
+    },
     [socket],
   );
 
-  const youAreHost = room?.players.some((p) => p.id === youId && p.isHost) ?? false;
-  const playing = room?.phase === "playing";
-
-  /**
-   * Host-authoritative generation: only the host's browser produces traffic, and
-   * it ships every tick to the server, which decides who is allowed to see it.
-   */
-  const gatewayIp = room?.gatewayIp;
-
-  useEffect(() => {
-    if (!youAreHost || !playing || !gatewayIp) return;
-
-    // Pin the ambient traffic to the LAN the server already handed out player
-    // addresses on, or the feed would show two unrelated subnets.
-    if (!feedRef.current) {
-      feedRef.current = createFeed({ network: createNetwork(Math.random, gatewayIp) });
-    }
-    const feed = feedRef.current;
-
-    const id = setInterval(() => {
-      const batch = feed.tick();
-      if (batch.length > 0) send({ type: "feed", packets: batch });
-    }, TICK_MS);
-
-    return () => clearInterval(id);
-  }, [youAreHost, playing, gatewayIp, send]);
-
-  // A new round deserves a fresh network and fresh sequence numbers.
+  // A new round starts from nothing known.
   useEffect(() => {
     if (room?.phase === "lobby") {
-      feedRef.current = null;
       setPackets([]);
       setFlags(new Map());
       setRole(null);
       setTasks([]);
+      setKnown([]);
+      setScanning(false);
     }
   }, [room?.phase]);
 
@@ -201,6 +197,9 @@ export function useRoom(options: {
     role,
     packets,
     tasks,
+    myIp,
+    known,
+    scanning,
     flags,
     takeoverUntil,
     error,

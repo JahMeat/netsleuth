@@ -10,9 +10,9 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "deploy:party": "partykit deploy",
-    "dev:party:fast": "partykit dev --var ROUND_MS=20000 --var MEETING_MS=25000",
     "test:feed": "tsx scripts/feed-demo.mts",
-    "test:game": "tsx scripts/game-test.mts"
+    "test:game": "tsx scripts/game-test.mts",
+    "dev:party:fast": "partykit dev --var ROUND_MS=120000 --var MEETING_MS=45000 --var SCAN_MS=3000"
   },
   "dependencies": {
     "next": "16.3.5",

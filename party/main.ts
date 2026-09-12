@@ -1,14 +1,18 @@
 import type * as Party from "partykit/server";
 import {
   ATTACK_COOLDOWN_MS,
+  COMPROMISE_COOLDOWN_MS,
   GLOBAL_ATTACK_COOLDOWN_MS,
   MEETING_MS,
   MIN_PLAYERS,
   ROUND_MS,
+  SCAN_COOLDOWN_MS,
+  SCAN_MS,
   STALL_MS,
   TAKEOVER_MS,
   TASKS_PER_PLAYER,
   normalizeName,
+  type AnomalyKind,
   type AttackKind,
   type ClientMessage,
   type EndReason,
@@ -24,7 +28,17 @@ import {
   type ServerMessage,
   type Vote,
 } from "../lib/protocol";
-import { activityPackets, createNetwork, type Network } from "../lib/packets";
+import {
+  activityPackets,
+  compromisePackets,
+  createNetwork,
+  disruptPackets,
+  scanPackets,
+  spoofPackets,
+  takeoverPackets,
+  type Network,
+  type RawPacket,
+} from "../lib/packets";
 import { createTaskList, doneSteps, isComplete, totalSteps, type Task } from "../lib/tasks";
 
 /**
@@ -47,13 +61,18 @@ const MIN_WORK_INTERVAL_MS = 120;
  * One PartyKit room == one game lobby. `this.room.id` *is* the 6-char code.
  *
  * The server owns all shared state and every secret. Clients send intent, never
- * state. Three rules carry the game:
+ * state. Four rules carry the game:
  *
  *  1. Roles are per-connection and never appear on a snapshot.
- *  2. The Hacker is never sent the packet feed at all.
- *  3. Task credit is decided here. A client reports that it *worked*, not that
- *     it *finished*, and the Hacker's work is silently discarded — which is what
- *     makes their task list a convincing fake rather than a real one.
+ *  2. Addresses are per-connection too. You learn your own and nobody else's,
+ *     which is what forces the hacker to hunt and the analysts to argue.
+ *  3. The Hacker is never sent the packet feed at all.
+ *  4. Task credit is decided here. A client reports that it *worked*, not that
+ *     it *finished*, and the Hacker's work is silently discarded.
+ *
+ * Every packet on the wire is caused by a player, and every hostile act is
+ * emitted from the acting player's own address. There is no ambient traffic to
+ * hide in: the hacker's cover is doing fake work, not background noise.
  */
 export default class NetsleuthRoom implements Party.Server {
   constructor(readonly room: Party.Room) {}
@@ -64,19 +83,25 @@ export default class NetsleuthRoom implements Party.Server {
 
   /** Secret. Never serialized into a snapshot. */
   private roles = new Map<string, Role>();
-  /** Secret per player: each sees only their own. */
+  /** Secret. Each player is told only their own. */
+  private ips = new Map<string, string>();
   private tasks = new Map<string, Task[]>();
   private lastWorkAt = new Map<string, number>();
+
+  /** Addresses the hacker has successfully swept for. Gates compromising. */
+  private discovered = new Set<string>();
+  private scanInFlight = false;
+  private lastScanAt = 0;
+  private lastCompromiseAt = 0;
 
   private network: Network = createNetwork();
   private deadline: number | null = null;
   private phaseTimer: ReturnType<typeof setTimeout> | null = null;
+  private roundEndsAt: number | null = null;
   private stalledUntil: number | null = null;
 
-  /** Sequence numbers for packets the server emits itself. */
-  private serverSeq = 1_000_000;
-
-  private anomalySeqs = new Map<number, AttackKind>();
+  private seq = 0;
+  private anomalySeqs = new Map<number, AnomalyKind>();
   private seenSeqs: number[] = [];
   private recentPackets = new Map<number, Packet>();
 
@@ -107,12 +132,14 @@ export default class NetsleuthRoom implements Party.Server {
         return this.onTransferHost(msg, sender);
       case "startGame":
         return this.onStartGame(sender);
-      case "feed":
-        return this.onFeed(msg, sender);
       case "work":
         return this.onWork(msg, sender);
       case "attack":
         return this.onAttack(msg, sender);
+      case "scan":
+        return this.onScan(msg, sender);
+      case "compromise":
+        return this.onCompromise(msg, sender);
       case "flag":
         return this.onFlag(msg, sender);
       case "callMeeting":
@@ -160,21 +187,24 @@ export default class NetsleuthRoom implements Party.Server {
     }
 
     // A reconnect re-sends `hello`, so this is an update as often as an insert.
-    // Preserve everything already decided about them, or a blip would reassign
-    // their IP mid-round and break every correlation the analysts had made.
+    // Preserve everything already decided, or a blip would reassign their
+    // address mid-round and void every correlation the analysts had made.
     const existing = this.players.get(sender.id);
     this.players.set(sender.id, {
       id: sender.id,
       name,
       isHost: existing ? existing.isHost : this.players.size === 0,
-      ip: existing?.ip ?? this.nextIp(),
-      ejected: existing?.ejected ?? false,
+      out: existing?.out ?? false,
+      outReason: existing?.outReason ?? null,
       canCallMeeting: existing?.canCallMeeting ?? true,
     });
+    if (!this.ips.has(sender.id)) this.ips.set(sender.id, this.nextIp());
 
     this.ensureHost();
 
-    // Someone reconnecting mid-round needs their private state back.
+    // Private state, re-sent so a reconnect does not land someone on the wrong
+    // screen or leave them ignorant of their own address.
+    this.send(sender, { type: "whoami", ip: this.ips.get(sender.id)! });
     const role = this.roles.get(sender.id);
     if (role) this.send(sender, { type: "role", role });
     const tasks = this.tasks.get(sender.id);
@@ -183,16 +213,18 @@ export default class NetsleuthRoom implements Party.Server {
     this.broadcastSnapshot();
   }
 
-  /** Hand out LAN addresses that are stable for the life of the room. */
+  /** Stable for the life of the room. Never broadcast. */
   private nextIp(): string {
-    const used = new Set([...this.players.values()].map((p) => p.ip));
-    const base = this.network.gateway.ip.split(".").slice(0, 3).join(".");
-    // .20-.99 is the player range; ambient devices sit at .100+.
+    const used = new Set(this.ips.values());
+    const base = this.network.gatewayIp.split(".").slice(0, 3).join(".");
+    // Start high and scatter, so consecutive joiners do not get consecutive
+    // addresses — join order would otherwise leak the mapping for free.
+    const pool: string[] = [];
     for (let i = 20; i < 100; i++) {
       const ip = `${base}.${i}`;
-      if (!used.has(ip)) return ip;
+      if (!used.has(ip)) pool.push(ip);
     }
-    return `${base}.99`;
+    return pool[Math.floor(Math.random() * pool.length)] ?? `${base}.99`;
   }
 
   private onKick(
@@ -258,6 +290,7 @@ export default class NetsleuthRoom implements Party.Server {
     this.assignRoles();
     this.dealTasks();
     this.phase = "playing";
+    this.roundEndsAt = null;
     this.setDeadline(envMs(this.room.env, "ROUND_MS", ROUND_MS), () =>
       this.endRound("time_expired"),
     );
@@ -280,8 +313,8 @@ export default class NetsleuthRoom implements Party.Server {
   /**
    * Everyone gets a list, the Hacker included. Theirs is real to them — it
    * advances, it completes, they can truthfully say they were working — it just
-   * never reaches the shared total. Without this their IP would be silent and
-   * they would be caught in the first thirty seconds.
+   * never reaches the shared total. With no ambient traffic to hide in, this is
+   * the hacker's only cover.
    */
   private dealTasks() {
     this.tasks.clear();
@@ -293,13 +326,12 @@ export default class NetsleuthRoom implements Party.Server {
     }
   }
 
-  /** Only real analysts' work counts toward the shared bar. */
   private progress(): Progress {
     let done = 0;
     let total = 0;
     for (const [id, list] of this.tasks) {
       const player = this.players.get(id);
-      if (!player || player.ejected) continue;
+      if (!player || player.out) continue;
       if (this.roles.get(id) !== "benign") continue;
       done += doneSteps(list);
       total += totalSteps(list);
@@ -312,8 +344,8 @@ export default class NetsleuthRoom implements Party.Server {
       return this.sendError(sender, "wrong_phase", "Not during a round.");
     }
     const player = this.players.get(sender.id);
-    if (!player || player.ejected) {
-      return this.sendError(sender, "ejected", "Spectators cannot call meetings.");
+    if (!player || player.out) {
+      return this.sendError(sender, "out", "You are out of this round.");
     }
     if (!player.canCallMeeting) {
       return this.sendError(sender, "no_meeting_left", "You already used your meeting.");
@@ -329,10 +361,6 @@ export default class NetsleuthRoom implements Party.Server {
     this.broadcastSnapshot();
   }
 
-  /**
-   * Ejecting is not the end of the round unless it catches the Hacker. Everyone
-   * else goes back to work with one fewer pair of hands.
-   */
   private resolveVote() {
     if (this.phase !== "meeting") return;
 
@@ -358,24 +386,22 @@ export default class NetsleuthRoom implements Party.Server {
 
     if (ejectedId) {
       const ejected = this.players.get(ejectedId);
-      if (ejected) ejected.ejected = true;
+      if (ejected) {
+        ejected.out = true;
+        ejected.outReason = "voted";
+      }
       if (this.roles.get(ejectedId) === "hacker") {
         return this.endRound("hacker_ejected");
       }
     }
 
-    // An ejected analyst's unfinished work leaves the denominator, so a wrong
-    // vote costs the room time but never makes the bar unwinnable.
-    if (this.remainingAnalysts() <= 1) {
-      return this.endRound("analysts_outnumbered");
-    }
-    if (this.isWorkComplete()) {
-      return this.endRound("tasks_complete");
-    }
+    if (this.remainingAnalysts() <= 1) return this.endRound("analysts_outnumbered");
+    if (this.isWorkComplete()) return this.endRound("tasks_complete");
 
     this.phase = "playing";
     this.meetingCalledBy = null;
     this.votes.clear();
+
     // The round clock keeps its original end time; a meeting costs real time.
     const left = (this.roundEndsAt ?? Date.now()) - Date.now();
     if (left <= 0) return this.endRound("time_expired");
@@ -385,7 +411,7 @@ export default class NetsleuthRoom implements Party.Server {
 
   private remainingAnalysts(): number {
     return [...this.players.values()].filter(
-      (p) => !p.ejected && this.roles.get(p.id) === "benign",
+      (p) => !p.out && this.roles.get(p.id) === "benign",
     ).length;
   }
 
@@ -405,7 +431,7 @@ export default class NetsleuthRoom implements Party.Server {
       .map((p) => {
         const flags = this.flaggedBy.get(p.id) ?? new Set<number>();
         let hit = 0;
-        for (const seq of flags) if (this.anomalySeqs.has(seq)) hit++;
+        for (const s of flags) if (this.anomalySeqs.has(s)) hit++;
         const list = this.tasks.get(p.id) ?? [];
         return {
           playerId: p.id,
@@ -432,9 +458,6 @@ export default class NetsleuthRoom implements Party.Server {
     this.broadcastSnapshot();
   }
 
-  /** Absolute end of the round, preserved across meetings. */
-  private roundEndsAt: number | null = null;
-
   private setDeadline(ms: number, onExpiry: () => void) {
     this.clearDeadline();
     this.deadline = Date.now() + ms;
@@ -450,11 +473,6 @@ export default class NetsleuthRoom implements Party.Server {
 
   // --- work ----------------------------------------------------------------
 
-  /**
-   * One unit of work. The client says which task it touched; the server decides
-   * whether that means anything. Either way it emits packets from the player's
-   * own IP, because looking busy is the point for both roles.
-   */
   private onWork(
     msg: Extract<ClientMessage, { type: "work" }>,
     sender: Party.Connection,
@@ -462,13 +480,12 @@ export default class NetsleuthRoom implements Party.Server {
     if (this.phase !== "playing") return;
 
     const player = this.players.get(sender.id);
-    if (!player || player.ejected) return;
+    if (!player || player.out) return;
 
     if (this.stalledUntil !== null && Date.now() < this.stalledUntil) {
       return this.sendError(sender, "stalled", "The network is flooded. Work is stalled.");
     }
 
-    // Cheap rate limit: a human cannot out-click this, a script can.
     const last = this.lastWorkAt.get(sender.id) ?? 0;
     const now = Date.now();
     if (now - last < MIN_WORK_INTERVAL_MS) return;
@@ -481,9 +498,16 @@ export default class NetsleuthRoom implements Party.Server {
     task.done++;
     this.send(sender, { type: "tasks", tasks: list });
 
-    // The trail. Identical for both roles — this is what makes a Hacker's
-    // faked work indistinguishable from real work in the feed.
-    this.emitActivity(player.ip, task.kind);
+    // The trail. Identical for both roles — this is what makes faked work
+    // indistinguishable from real work on the wire.
+    this.emit(
+      activityPackets({
+        from: this.ips.get(sender.id)!,
+        gatewayIp: this.network.gatewayIp,
+        seqFrom: this.seq,
+        kind: task.kind,
+      }),
+    );
 
     // ...but only an analyst's work moves the shared bar.
     if (this.roles.get(sender.id) === "benign" && this.isWorkComplete()) {
@@ -493,97 +517,137 @@ export default class NetsleuthRoom implements Party.Server {
     this.broadcastSnapshot();
   }
 
-  private emitActivity(ip: string, kind: Task["kind"]) {
-    const raws = activityPackets({
-      ip,
-      kind,
-      seqFrom: this.serverSeq,
-      gatewayIp: this.network.gateway.ip,
-    });
-    this.serverSeq += raws.length;
+  // --- hacker actions ------------------------------------------------------
 
-    const clean: Packet[] = [];
-    for (const raw of raws) {
-      const { anomaly: _drop, ...packet } = raw;
-      this.recentPackets.set(packet.seq, packet);
-      clean.push(packet);
+  /** Shared gate for every hostile action. */
+  private requireLiveHacker(sender: Party.Connection): string | null {
+    if (this.phase !== "playing") {
+      this.sendError(sender, "wrong_phase", "Not during a round.");
+      return null;
     }
-    this.fanOutToAnalysts(clean);
+    if (this.roles.get(sender.id) !== "hacker") {
+      this.sendError(sender, "not_hacker", "You are not the hacker.");
+      return null;
+    }
+    const self = this.players.get(sender.id);
+    if (!self || self.out) {
+      this.sendError(sender, "out", "You are out of this round.");
+      return null;
+    }
+    return this.ips.get(sender.id)!;
   }
-
-  // --- the ambient feed ----------------------------------------------------
 
   /**
-   * Background noise from the host's browser. Activity packets do not come
-   * through here — they are emitted by the server from validated work — but the
-   * fan-out rule is the same, and it is the only place role filtering happens.
+   * An address sweep. It takes real time to come back and it is unmistakable in
+   * the feed, so hunting a specific person is an act the room can see and
+   * argue about — they just cannot tell *who* the scanning address belongs to.
    */
-  private onFeed(
-    msg: Extract<ClientMessage, { type: "feed" }>,
+  private onScan(
+    msg: Extract<ClientMessage, { type: "scan" }>,
     sender: Party.Connection,
   ) {
-    const host = this.players.get(sender.id);
-    if (!host?.isHost) return this.sendError(sender, "not_host", "Only the host feeds.");
-    if (this.phase !== "playing") return;
-    if (!Array.isArray(msg.packets)) return;
+    const from = this.requireLiveHacker(sender);
+    if (!from) return;
 
-    const clean: Packet[] = [];
-    for (const raw of msg.packets) {
-      const { anomaly, ...packet } = raw;
-      if (anomaly) this.trackAnomaly(packet.seq, anomaly);
-      this.recentPackets.set(packet.seq, packet);
-      clean.push(packet);
+    if (this.scanInFlight) {
+      return this.sendError(sender, "scanning", "A sweep is already running.");
     }
-    this.trimTracked();
-    this.fanOutToAnalysts(clean);
+    const now = Date.now();
+    if (now - this.lastScanAt < SCAN_COOLDOWN_MS) {
+      return this.sendError(sender, "on_cooldown", "Sweep is still recharging.");
+    }
+
+    const target = this.players.get(msg.playerId);
+    if (!target || target.out || target.id === sender.id) {
+      return this.sendError(sender, "unknown_player", "Nothing to sweep for there.");
+    }
+
+    this.lastScanAt = now;
+    this.scanInFlight = true;
+
+    // Probe a handful of live addresses, not just the real target, so the feed
+    // does not hand the analysts the victim's identity along with the scan.
+    const live = [...this.players.values()]
+      .filter((p) => !p.out && p.id !== sender.id)
+      .map((p) => this.ips.get(p.id)!)
+      .sort(() => Math.random() - 0.5);
+
+    this.emit(
+      scanPackets({
+        from,
+        gatewayIp: this.network.gatewayIp,
+        seqFrom: this.seq,
+        targets: live,
+      }),
+    );
+
+    const delay = envMs(this.room.env, "SCAN_MS", SCAN_MS);
+    setTimeout(() => {
+      this.scanInFlight = false;
+      const still = this.players.get(msg.playerId);
+      const conn = this.room.getConnection(sender.id);
+      if (!still || !conn) return;
+      const ip = this.ips.get(msg.playerId)!;
+      this.discovered.add(ip);
+      this.send(conn, { type: "scanResult", playerId: still.id, name: still.name, ip });
+    }, delay);
   }
 
-  private fanOutToAnalysts(packets: Packet[]) {
-    if (packets.length === 0) return;
-    for (const conn of this.room.getConnections()) {
-      // Ejected players keep watching — they just cannot act any more.
-      const role = this.roles.get(conn.id);
-      if (role !== "benign") continue;
-      this.send(conn, { type: "packets", packets });
-    }
-  }
+  /**
+   * The kill. Gated on having actually found the address: the hacker cannot
+   * compromise someone they have not swept for, which is the whole point of
+   * hiding the mapping in the first place.
+   */
+  private onCompromise(
+    msg: Extract<ClientMessage, { type: "compromise" }>,
+    sender: Party.Connection,
+  ) {
+    const from = this.requireLiveHacker(sender);
+    if (!from) return;
 
-  private trackAnomaly(seq: number, kind: AttackKind) {
-    this.anomalySeqs.set(seq, kind);
-    this.seenSeqs.push(seq);
-  }
-
-  private trimTracked() {
-    while (this.seenSeqs.length > MAX_TRACKED_SEQS) {
-      const old = this.seenSeqs.shift();
-      if (old !== undefined) this.anomalySeqs.delete(old);
+    const now = Date.now();
+    if (now - this.lastCompromiseAt < COMPROMISE_COOLDOWN_MS) {
+      return this.sendError(sender, "on_cooldown", "Still too hot. Wait.");
     }
-    if (this.recentPackets.size > MAX_TRACKED_SEQS) {
-      const cutoff = this.recentPackets.size - MAX_TRACKED_SEQS;
-      let i = 0;
-      for (const key of this.recentPackets.keys()) {
-        if (i++ >= cutoff) break;
-        this.recentPackets.delete(key);
-      }
+    if (!this.discovered.has(msg.ip)) {
+      return this.sendError(sender, "unknown_ip", "You have not found that address.");
     }
-  }
 
-  // --- hacker actions ------------------------------------------------------
+    const victimId = [...this.ips.entries()].find(([, ip]) => ip === msg.ip)?.[0];
+    const victim = victimId ? this.players.get(victimId) : undefined;
+    if (!victim || victim.out || victim.id === sender.id) {
+      return this.sendError(sender, "unknown_ip", "Nothing live at that address.");
+    }
+
+    this.lastCompromiseAt = now;
+    victim.out = true;
+    victim.outReason = "compromised";
+
+    this.emit(
+      compromisePackets({
+        from,
+        gatewayIp: this.network.gatewayIp,
+        seqFrom: this.seq,
+        victim: msg.ip,
+      }),
+    );
+
+    const conn = this.room.getConnection(victim.id);
+    if (conn) this.send(conn, { type: "compromised" });
+
+    if (this.remainingAnalysts() <= 1) return this.endRound("analysts_outnumbered");
+    // Their unfinished work leaves the denominator, which can complete the bar.
+    if (this.isWorkComplete()) return this.endRound("tasks_complete");
+
+    this.broadcastSnapshot();
+  }
 
   private onAttack(
     msg: Extract<ClientMessage, { type: "attack" }>,
     sender: Party.Connection,
   ) {
-    if (this.phase !== "playing") {
-      return this.sendError(sender, "wrong_phase", "Not during a round.");
-    }
-    if (this.roles.get(sender.id) !== "hacker") {
-      return this.sendError(sender, "not_hacker", "You are not the hacker.");
-    }
-    const self = this.players.get(sender.id);
-    if (!self || self.ejected) {
-      return this.sendError(sender, "ejected", "You have been ejected.");
-    }
+    const from = this.requireLiveHacker(sender);
+    if (!from) return;
 
     const kind = msg.kind;
     if (kind !== "spoof" && kind !== "disrupt" && kind !== "takeover") {
@@ -602,33 +666,77 @@ export default class NetsleuthRoom implements Party.Server {
     this.lastAttackByKind.set(kind, now);
     this.attacksLaunched++;
 
-    // Attacks are worth the exposure because they buy time against the bar.
-    if (kind === "disrupt") {
+    const ctx = { from, gatewayIp: this.network.gatewayIp, seqFrom: this.seq };
+
+    if (kind === "spoof") {
+      this.emit(spoofPackets(ctx));
+    } else if (kind === "disrupt") {
       this.stalledUntil = now + STALL_MS;
+      this.emit(disruptPackets(ctx));
       setTimeout(() => {
         if (this.stalledUntil !== null && Date.now() >= this.stalledUntil) {
           this.stalledUntil = null;
           this.broadcastSnapshot();
         }
       }, STALL_MS + 50);
-    }
-
-    let victimLabel: string | undefined;
-    if (kind === "takeover") {
+    } else {
       const candidates = [...this.players.values()].filter(
-        (p) => !p.ejected && this.roles.get(p.id) === "benign",
+        (p) => !p.out && this.roles.get(p.id) === "benign",
       );
       const victim = candidates[Math.floor(Math.random() * candidates.length)];
-      const conn = victim ? this.room.getConnection(victim.id) : null;
-      if (conn) this.send(conn, { type: "takeover", untilMs: now + TAKEOVER_MS });
-      victimLabel = victim?.name;
+      if (victim) {
+        this.emit(takeoverPackets({ ...ctx, victim: this.ips.get(victim.id)! }));
+        const conn = this.room.getConnection(victim.id);
+        if (conn) this.send(conn, { type: "takeover", untilMs: now + TAKEOVER_MS });
+      }
     }
 
-    const hostId = [...this.players.values()].find((p) => p.isHost)?.id;
-    const hostConn = hostId ? this.room.getConnection(hostId) : null;
-    if (hostConn) this.send(hostConn, { type: "inject", kind, victimLabel });
-
     this.broadcastSnapshot();
+  }
+
+  // --- the wire ------------------------------------------------------------
+
+  /**
+   * The single point where traffic reaches players, and the only place role
+   * filtering happens. Ground truth is recorded here and stripped before
+   * anything leaves, so no client is ever told which packets were hostile.
+   */
+  private emit(raws: RawPacket[]) {
+    if (raws.length === 0) return;
+    this.seq += raws.length;
+
+    const clean: Packet[] = [];
+    for (const raw of raws) {
+      const { anomaly, ...packet } = raw;
+      if (anomaly) {
+        this.anomalySeqs.set(packet.seq, anomaly);
+        this.seenSeqs.push(packet.seq);
+      }
+      this.recentPackets.set(packet.seq, packet);
+      clean.push(packet);
+    }
+    this.trimTracked();
+
+    for (const conn of this.room.getConnections()) {
+      // Players who are out keep watching; they just cannot act.
+      if (this.roles.get(conn.id) !== "benign") continue;
+      this.send(conn, { type: "packets", packets: clean });
+    }
+  }
+
+  private trimTracked() {
+    while (this.seenSeqs.length > MAX_TRACKED_SEQS) {
+      const old = this.seenSeqs.shift();
+      if (old !== undefined) this.anomalySeqs.delete(old);
+    }
+    if (this.recentPackets.size > MAX_TRACKED_SEQS) {
+      const cutoff = this.recentPackets.size - MAX_TRACKED_SEQS;
+      let i = 0;
+      for (const key of this.recentPackets.keys()) {
+        if (i++ >= cutoff) break;
+        this.recentPackets.delete(key);
+      }
+    }
   }
 
   // --- analyst actions -----------------------------------------------------
@@ -645,7 +753,7 @@ export default class NetsleuthRoom implements Party.Server {
     }
 
     const player = this.players.get(sender.id);
-    if (!player || player.ejected) return;
+    if (!player || player.out) return;
 
     let flags = this.flaggedBy.get(sender.id);
     if (!flags) this.flaggedBy.set(sender.id, (flags = new Set()));
@@ -679,12 +787,12 @@ export default class NetsleuthRoom implements Party.Server {
       return this.sendError(sender, "wrong_phase", "There is no vote open.");
     }
     const voter = this.players.get(sender.id);
-    if (!voter || voter.ejected) {
-      return this.sendError(sender, "ejected", "Spectators do not vote.");
+    if (!voter || voter.out) {
+      return this.sendError(sender, "out", "You are out of this round.");
     }
     if (msg.targetId !== null) {
       const target = this.players.get(msg.targetId);
-      if (!target || target.ejected) {
+      if (!target || target.out) {
         return this.sendError(sender, "unknown_player", "That player is not in play.");
       }
     }
@@ -696,7 +804,7 @@ export default class NetsleuthRoom implements Party.Server {
   }
 
   private activePlayers(): number {
-    return [...this.players.values()].filter((p) => !p.ejected).length;
+    return [...this.players.values()].filter((p) => !p.out).length;
   }
 
   // --- membership ----------------------------------------------------------
@@ -716,7 +824,6 @@ export default class NetsleuthRoom implements Party.Server {
     if (this.phase === "playing" || this.phase === "meeting") {
       if (this.roles.get(id) === "hacker") return this.endRound("hacker_left");
       if (this.remainingAnalysts() <= 1) return this.endRound("analysts_outnumbered");
-      // Their unfinished work leaves the denominator, which can complete the bar.
       if (this.isWorkComplete()) return this.endRound("tasks_complete");
       if (this.phase === "meeting" && this.votes.size >= this.activePlayers()) {
         return this.resolveVote();
@@ -754,7 +861,7 @@ export default class NetsleuthRoom implements Party.Server {
       players: [...this.players.values()],
       deadline: this.deadline,
       progress: this.progress(),
-      gatewayIp: this.network.gateway.ip,
+      gatewayIp: this.network.gatewayIp,
       stalledUntil: this.stalledUntil,
       meetingCalledBy: this.meetingCalledBy,
       evidence: this.phase === "meeting" || this.phase === "ended" ? this.evidence : [],
