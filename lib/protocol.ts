@@ -113,6 +113,8 @@ export type ClientMessage =
   | { type: "kick"; playerId: string }
   | { type: "transferHost"; playerId: string }
   | { type: "startGame" }
+  /** Host only, once a round has ended: wipe the board and return to the lobby. */
+  | { type: "restart" }
   /** One unit of work on one of your own tasks. The server decides if it counts. */
   | { type: "work"; taskId: string }
   /** Hacker only. */
@@ -143,7 +145,8 @@ export type ErrorCode =
   | "stalled"
   | "out"
   | "unknown_ip"
-  | "scanning";
+  | "scanning"
+  | "not_ended";
 
 /** Server -> client. */
 export type ServerMessage =

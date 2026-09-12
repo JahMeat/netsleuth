@@ -158,7 +158,9 @@ function ConnectedLobby({
           <Meeting room={room} youId={youId} myIp={myIp} role={role} send={send} />
         )}
 
-        {room.phase === "ended" && <Results room={room} />}
+        {room.phase === "ended" && (
+          <Results room={room} youId={youId} send={send} />
+        )}
       </GameShell>
     );
   }

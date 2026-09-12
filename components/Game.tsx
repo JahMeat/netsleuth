@@ -629,11 +629,21 @@ const REASONS: Record<EndReason, string> = {
   hacker_left: "The hacker left the room.",
 };
 
-export function Results({ room }: { room: RoomSnapshot }) {
+export function Results({
+  room,
+  youId,
+  send,
+}: {
+  room: RoomSnapshot;
+  youId: string | null;
+  send: (m: ClientMessage) => void;
+}) {
   const r = room.result;
   if (!r) return null;
 
   const compromised = room.players.filter((p) => p.outReason === "compromised");
+  const host = room.players.find((p) => p.isHost);
+  const youAreHost = host?.id === youId;
 
   return (
     <>
@@ -670,6 +680,24 @@ export function Results({ room }: { room: RoomSnapshot }) {
         {r.hits.length === 0 && (
           <p className="subtitle" style={{ margin: 0 }}>
             No analysts to score.
+          </p>
+        )}
+      </div>
+
+      <div className="panel startPanel">
+        {youAreHost ? (
+          <>
+            <button className="start" onClick={() => send({ type: "restart" })}>
+              Play again
+            </button>
+            <p className="hint" style={{ margin: 0 }}>
+              Everyone returns to the lobby and roles are redrawn. Addresses are
+              reissued too, so nothing anyone learned this round carries over.
+            </p>
+          </>
+        ) : (
+          <p className="subtitle" style={{ margin: 0 }}>
+            Waiting for {host?.name ?? "the host"} to start another round.
           </p>
         )}
       </div>

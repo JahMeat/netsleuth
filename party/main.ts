@@ -132,6 +132,8 @@ export default class NetsleuthRoom implements Party.Server {
         return this.onTransferHost(msg, sender);
       case "startGame":
         return this.onStartGame(sender);
+      case "restart":
+        return this.onRestart(sender);
       case "work":
         return this.onWork(msg, sender);
       case "attack":
@@ -294,6 +296,65 @@ export default class NetsleuthRoom implements Party.Server {
     this.setDeadline(envMs(this.room.env, "ROUND_MS", ROUND_MS), () =>
       this.endRound("time_expired"),
     );
+    this.broadcastSnapshot();
+  }
+
+  /**
+   * Back to the lobby with a clean board.
+   *
+   * Addresses are re-drawn on a fresh subnet rather than reused. Anything
+   * learned last round -- an address someone claimed in a meeting, an address
+   * the hacker swept for -- has to be worthless in the next one, or the second
+   * round is played with the first round's answers.
+   */
+  private onRestart(sender: Party.Connection) {
+    if (!this.requireHost(sender)) return;
+    if (this.phase !== "ended") {
+      return this.sendError(sender, "not_ended", "The round is still running.");
+    }
+
+    this.clearDeadline();
+    this.phase = "lobby";
+    this.roundEndsAt = null;
+    this.stalledUntil = null;
+
+    this.roles.clear();
+    this.tasks.clear();
+    this.lastWorkAt.clear();
+
+    this.discovered.clear();
+    this.scanInFlight = false;
+    this.lastScanAt = 0;
+    this.lastCompromiseAt = 0;
+    this.lastAttackAt = 0;
+    this.lastAttackByKind.clear();
+    this.attacksLaunched = 0;
+
+    this.seq = 0;
+    this.anomalySeqs.clear();
+    this.seenSeqs = [];
+    this.recentPackets.clear();
+
+    this.evidence = [];
+    this.flaggedBy.clear();
+    this.votes.clear();
+    this.meetingCalledBy = null;
+    this.result = null;
+
+    for (const p of this.players.values()) {
+      p.out = false;
+      p.outReason = null;
+      p.canCallMeeting = true;
+    }
+
+    this.network = createNetwork();
+    this.ips.clear();
+    for (const id of this.players.keys()) {
+      this.ips.set(id, this.nextIp());
+      const conn = this.room.getConnection(id);
+      if (conn) this.send(conn, { type: "whoami", ip: this.ips.get(id)! });
+    }
+
     this.broadcastSnapshot();
   }
 
